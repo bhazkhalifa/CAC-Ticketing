@@ -247,6 +247,9 @@ export default function App() {
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [newUsername, setNewUsername] = useState('');
   const [newUserName, setNewUserName] = useState('');
+  const [editingUser, setEditingUser] = useState<GateUser | null>(null);
+  const [editUserName, setEditUserName] = useState('');
+  const [editUserUsername, setEditUserUsername] = useState('');
 
   // Shows State
   const [shows, setShows] = useState<Show[]>(() => {
@@ -624,6 +627,74 @@ export default function App() {
       showToast('User account removed from database.', 'info');
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `users/${username}`);
+    }
+  };
+
+  const handleStartEditUser = (user: GateUser) => {
+    setEditingUser(user);
+    setEditUserName(user.name);
+    setEditUserUsername(user.username);
+  };
+
+  const handleCancelEditUser = () => {
+    setEditingUser(null);
+    setEditUserName('');
+    setEditUserUsername('');
+  };
+
+  const handleSaveEditUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUser) return;
+
+    const trimmedName = editUserName.trim();
+    const cleanNewUsername = editUserUsername.trim().toLowerCase();
+
+    if (!trimmedName || !cleanNewUsername) {
+      showToast('Full Name and Username are required.', 'error');
+      return;
+    }
+
+    const oldUsername = editingUser.username.toLowerCase();
+
+    // Check if new username conflicts with an existing different user
+    if (
+      cleanNewUsername !== oldUsername &&
+      users.some(u => u.username.toLowerCase() === cleanNewUsername)
+    ) {
+      showToast(`Username "${cleanNewUsername}" is already taken by another user.`, 'error');
+      return;
+    }
+
+    const updatedUser: GateUser = {
+      ...editingUser,
+      username: cleanNewUsername,
+      name: trimmedName,
+    };
+
+    // Update local state immediately
+    setUsers(prev =>
+      prev.map(u => (u.username.toLowerCase() === oldUsername ? updatedUser : u))
+    );
+
+    // If currently logged-in user is being modified, update active user session
+    if (currentUser && currentUser.username.toLowerCase() === oldUsername) {
+      setCurrentUser(updatedUser);
+      localStorage.setItem('sucac_active_user', JSON.stringify(updatedUser));
+    }
+
+    try {
+      if (cleanNewUsername !== oldUsername) {
+        // Username changed: write to new document ID and delete old document ID in Firestore
+        await setDoc(doc(db, 'users', cleanNewUsername), updatedUser);
+        await deleteDoc(doc(db, 'users', oldUsername));
+      } else {
+        // Only display name changed: update existing document
+        await setDoc(doc(db, 'users', cleanNewUsername), updatedUser);
+      }
+      showToast(`User "${updatedUser.name}" (@${updatedUser.username}) updated & synced!`, 'success');
+      handleCancelEditUser();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `users/${cleanNewUsername}`);
     }
   };
 
@@ -2358,52 +2429,118 @@ export default function App() {
             </div>
 
             <div className="py-4 space-y-4">
-              {/* Add User Form */}
-              <form onSubmit={handleAddUser} className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
-                <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <Plus className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>Authorize New Staff User</span>
-                </span>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-                      Username / Passcode <span className="text-rose-400">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={newUsername}
-                      onChange={e => setNewUsername(e.target.value)}
-                      placeholder="e.g. maria, usher1"
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
-                    />
-                    <span className="text-[10px] text-slate-500 mt-0.5 block">Typed at the gatewall</span>
+              {/* Add User or Edit User Form */}
+              {editingUser ? (
+                <form onSubmit={handleSaveEditUser} className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                      <Edit2 className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Edit User Account (@{editingUser.username})</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleCancelEditUser}
+                      className="text-[11px] text-slate-400 hover:text-white cursor-pointer"
+                    >
+                      Cancel
+                    </button>
                   </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-                      Full Name of User <span className="text-rose-400">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={newUserName}
-                      onChange={e => setNewUserName(e.target.value)}
-                      placeholder="e.g. Maria Santos"
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                    <span className="text-[10px] text-slate-500 mt-0.5 block">Used for &quot;Welcome, Name&quot;</span>
-                  </div>
-                </div>
 
-                <button
-                  type="submit"
-                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Create User Key</span>
-                </button>
-              </form>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Username / Passcode <span className="text-amber-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={editUserUsername}
+                        onChange={e => setEditUserUsername(e.target.value)}
+                        placeholder="e.g. maria, usher1"
+                        className="w-full bg-slate-900 border border-amber-500/40 focus:border-amber-400 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500 font-mono"
+                      />
+                      <span className="text-[10px] text-slate-400 mt-0.5 block">Passcode typed at gatewall</span>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Full Name of User <span className="text-amber-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={editUserName}
+                        onChange={e => setEditUserName(e.target.value)}
+                        placeholder="e.g. Maria Santos"
+                        className="w-full bg-slate-900 border border-amber-500/40 focus:border-amber-400 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                      <span className="text-[10px] text-slate-400 mt-0.5 block">Display name for staff greeting</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="submit"
+                      className="flex-1 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold rounded-lg text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-md shadow-amber-500/20"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Save Changes</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCancelEditUser}
+                      className="py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded-lg text-xs transition cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <form onSubmit={handleAddUser} className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
+                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <Plus className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Authorize New Staff User</span>
+                  </span>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                        Username / Passcode <span className="text-rose-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newUsername}
+                        onChange={e => setNewUsername(e.target.value)}
+                        placeholder="e.g. maria, usher1"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-0.5 block">Typed at the gatewall</span>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                        Full Name of User <span className="text-rose-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newUserName}
+                        onChange={e => setNewUserName(e.target.value)}
+                        placeholder="e.g. Maria Santos"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-0.5 block">Used for &quot;Welcome, Name&quot;</span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Create User Key</span>
+                  </button>
+                </form>
+              )}
 
               {/* Existing Users List */}
               <div className="space-y-2">
@@ -2413,10 +2550,15 @@ export default function App() {
                 <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
                   {users.map(u => {
                     const userBookingsCount = Object.values(bookings).filter(b => (b.bookedByUsername || 'bas').toLowerCase() === u.username.toLowerCase()).length;
+                    const isBeingEdited = editingUser?.username.toLowerCase() === u.username.toLowerCase();
                     return (
                       <div
                         key={u.username}
-                        className="p-3 rounded-xl border border-slate-800 bg-slate-950 flex items-center justify-between gap-3"
+                        className={`p-3 rounded-xl border transition flex items-center justify-between gap-3 ${
+                          isBeingEdited
+                            ? 'border-amber-500/60 bg-amber-500/10'
+                            : 'border-slate-800 bg-slate-950'
+                        }`}
                       >
                         <div className="flex items-center gap-2.5">
                           <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-black ${
@@ -2445,15 +2587,27 @@ export default function App() {
                           </div>
                         </div>
 
-                        {!u.isSuperAdmin && (
+                        <div className="flex items-center gap-1">
                           <button
-                            onClick={() => handleDeleteUser(u.username)}
-                            className="p-1.5 text-slate-400 hover:text-rose-400 rounded hover:bg-slate-800 cursor-pointer"
-                            title="Remove user"
+                            type="button"
+                            onClick={() => handleStartEditUser(u)}
+                            className="p-1.5 text-slate-400 hover:text-amber-400 rounded hover:bg-slate-800 transition cursor-pointer"
+                            title={`Edit ${u.name} (@${u.username})`}
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Edit2 className="w-3.5 h-3.5" />
                           </button>
-                        )}
+
+                          {!u.isSuperAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteUser(u.username)}
+                              className="p-1.5 text-slate-400 hover:text-rose-400 rounded hover:bg-slate-800 transition cursor-pointer"
+                              title="Remove user"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
@@ -2463,7 +2617,10 @@ export default function App() {
 
             <div className="pt-3 border-t border-slate-800 flex justify-end">
               <button
-                onClick={() => setIsUserModalOpen(false)}
+                onClick={() => {
+                  handleCancelEditUser();
+                  setIsUserModalOpen(false);
+                }}
                 className="py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-medium cursor-pointer"
               >
                 Close
