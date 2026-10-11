@@ -1,0 +1,8 @@
+{
+  "name": "CAC Ticketing",
+  "description": "CAC Admin ticketing system for managing local events and seat reservations securely.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
