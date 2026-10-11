@@ -750,7 +750,7 @@ export default function App() {
         // Secretly record current logged-in user:
         bookedByUsername: currentUser?.username || 'bas',
         bookedByName: currentUser?.name || 'Bas',
-        notes: bookingNotes.trim() || undefined,
+        notes: bookingNotes.trim() || '',
         bookedAt: timestamp,
       };
       newBookingsMap[seatId] = bookingData;
@@ -802,7 +802,7 @@ export default function App() {
       targetShow = {
         id: editingShowId,
         title: showFormTitle.trim(),
-        description: showFormDescription.trim() || undefined,
+        description: showFormDescription.trim() || '',
         date: showFormDate,
         time: showFormTime.trim(),
         type: showFormType,
@@ -814,7 +814,7 @@ export default function App() {
       targetShow = {
         id: newId,
         title: showFormTitle.trim(),
-        description: showFormDescription.trim() || undefined,
+        description: showFormDescription.trim() || '',
         date: showFormDate,
         time: showFormTime.trim(),
         type: showFormType,
@@ -2044,8 +2044,9 @@ export default function App() {
                     </div>
 
                     <div>
-                      <label className="block text-xs font-semibold text-slate-300 mb-1">
-                        Notes / Department / Section
+                      <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center justify-between">
+                        <span>Notes / Department / Section</span>
+                        <span className="text-[10px] text-slate-400 font-normal lowercase">(optional)</span>
                       </label>
                       <input
                         type="text"
