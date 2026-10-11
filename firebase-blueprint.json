@@ -1,0 +1,189 @@
+{
+  "entities": {
+    "Show": {
+      "title": "Show",
+      "description": "Theater show production schedule and metadata",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the show",
+          "maxLength": 100
+        },
+        "title": {
+          "type": "string",
+          "description": "Title of the show production",
+          "maxLength": 200
+        },
+        "date": {
+          "type": "string",
+          "description": "Date of performance in YYYY-MM-DD format",
+          "maxLength": 50
+        },
+        "time": {
+          "type": "string",
+          "description": "Time of performance e.g. 7:00 PM",
+          "maxLength": 50
+        },
+        "type": {
+          "type": "string",
+          "description": "Production type e.g. GALA, MATINEE",
+          "maxLength": 50
+        },
+        "description": {
+          "type": "string",
+          "description": "Brief description of the show",
+          "maxLength": 500
+        }
+      },
+      "required": ["id", "title", "date", "time", "type"]
+    },
+    "SeatCategory": {
+      "title": "SeatCategory",
+      "description": "Auditorium seating tier pricing and display configuration",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Category identifier",
+          "maxLength": 100
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of tier",
+          "maxLength": 100
+        },
+        "color": {
+          "type": "string",
+          "description": "Hex color code e.g. #f59e0b",
+          "maxLength": 20
+        },
+        "price": {
+          "type": "number",
+          "description": "Ticket price in Philippine Pesos (PHP)"
+        }
+      },
+      "required": ["id", "name", "color", "price"]
+    },
+    "GateUser": {
+      "title": "GateUser",
+      "description": "Authorized staff or super admin gate access user",
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "Login passcode key / handle",
+          "maxLength": 100
+        },
+        "name": {
+          "type": "string",
+          "description": "Staff member display name",
+          "maxLength": 150
+        },
+        "isSuperAdmin": {
+          "type": "boolean",
+          "description": "Whether user has super admin permissions"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp when the user account was created",
+          "maxLength": 60
+        }
+      },
+      "required": ["username", "name", "createdAt"]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "Seat reservation containing patron and cashier attribution",
+      "type": "object",
+      "properties": {
+        "seatId": {
+          "type": "string",
+          "description": "Seat identifier e.g. A-15 or T-29",
+          "maxLength": 50
+        },
+        "patronName": {
+          "type": "string",
+          "description": "Full name of the ticket patron",
+          "maxLength": 200
+        },
+        "patronId": {
+          "type": "string",
+          "description": "Student ID, Faculty ID, or reference number",
+          "maxLength": 100
+        },
+        "paymentMethod": {
+          "type": "string",
+          "description": "Payment channel used",
+          "maxLength": 100
+        },
+        "categoryId": {
+          "type": "string",
+          "description": "Category tier ID at time of booking",
+          "maxLength": 100
+        },
+        "bookedByUsername": {
+          "type": "string",
+          "description": "Staff member username who recorded the reservation",
+          "maxLength": 100
+        },
+        "bookedByName": {
+          "type": "string",
+          "description": "Staff member display name",
+          "maxLength": 150
+        },
+        "notes": {
+          "type": "string",
+          "description": "Optional reservation notes or remarks",
+          "maxLength": 500
+        },
+        "bookedAt": {
+          "type": "string",
+          "description": "ISO timestamp when the seat was reserved",
+          "maxLength": 60
+        }
+      },
+      "required": ["seatId", "patronName", "patronId", "paymentMethod", "categoryId", "bookedByUsername", "bookedByName", "bookedAt"]
+    },
+    "SeatCategoryMap": {
+      "title": "SeatCategoryMap",
+      "description": "Mapping from seat ID to category ID for a specific show",
+      "type": "object",
+      "properties": {
+        "seatId": {
+          "type": "string",
+          "description": "Seat ID e.g. B-12",
+          "maxLength": 50
+        },
+        "categoryId": {
+          "type": "string",
+          "description": "Assigned category ID",
+          "maxLength": 100
+        }
+      },
+      "required": ["seatId", "categoryId"]
+    }
+  },
+  "firestore": {
+    "/shows/{showId}": {
+      "schema": "Show",
+      "description": "Show productions and performance schedules"
+    },
+    "/categories/{categoryId}": {
+      "schema": "SeatCategory",
+      "description": "Seating tiers and ticket price definitions"
+    },
+    "/users/{username}": {
+      "schema": "GateUser",
+      "description": "Authorized staff and ticketing admin users"
+    },
+    "/shows/{showId}/bookings/{seatId}": {
+      "schema": "Booking",
+      "description": "Reserved and confirmed ticket bookings for a specific show"
+    },
+    "/shows/{showId}/seatCategories/{seatId}": {
+      "schema": "SeatCategoryMap",
+      "description": "Seat-to-category mapping for a specific show"
+    }
+  }
+}

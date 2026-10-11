@@ -30,6 +30,15 @@ import {
   Focus
 } from 'lucide-react';
 import { toPng } from 'html-to-image';
+import {
+  collection,
+  doc,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+  writeBatch
+} from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType, testConnection } from './firebase';
 
 export interface Show {
   id: string;
@@ -368,18 +377,21 @@ export default function App() {
   const [categoryFormColor, setCategoryFormColor] = useState('#f59e0b');
   const [categoryFormPrice, setCategoryFormPrice] = useState('500');
 
-  // Center View in seating blueprint
+  // Center View in seating blueprint (also resets zoom to 50%)
   const handleCenterView = () => {
-    if (scrollContainerRef.current) {
-      const el = scrollContainerRef.current;
-      const targetLeft = Math.max(0, (el.scrollWidth - el.clientWidth) / 2);
-      el.scrollTo({
-        left: targetLeft,
-        top: 0,
-        behavior: 'smooth',
-      });
-      showToast('View centered', 'info');
-    }
+    setZoom(0.5);
+    setTimeout(() => {
+      if (scrollContainerRef.current) {
+        const el = scrollContainerRef.current;
+        const targetLeft = Math.max(0, (el.scrollWidth - el.clientWidth) / 2);
+        el.scrollTo({
+          left: targetLeft,
+          top: 0,
+          behavior: 'smooth',
+        });
+      }
+    }, 50);
+    showToast('Centered view & reset zoom to 50%', 'info');
   };
 
   // Center view on initial load and show switch
@@ -405,7 +417,123 @@ export default function App() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  // Sync state to local storage
+  // Test Firestore connection on boot
+  useEffect(() => {
+    testConnection();
+  }, []);
+
+  // Real-time synchronization for Shows
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'shows'), (snapshot) => {
+      if (snapshot.empty) {
+        // Seed default shows to Firestore
+        DEFAULT_SHOWS.forEach(s => {
+          setDoc(doc(db, 'shows', s.id), s).catch(err =>
+            handleFirestoreError(err, OperationType.WRITE, `shows/${s.id}`)
+          );
+        });
+        setShows(DEFAULT_SHOWS);
+      } else {
+        const loaded: Show[] = [];
+        snapshot.forEach(d => loaded.push(d.data() as Show));
+        setShows(loaded);
+        if (!loaded.some(s => s.id === currentShowId) && loaded.length > 0) {
+          setCurrentShowId(loaded[0].id);
+        }
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'shows');
+    });
+    return () => unsub();
+  }, []);
+
+  // Real-time synchronization for Seat Categories and Pricing
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'categories'), (snapshot) => {
+      if (snapshot.empty) {
+        DEFAULT_CATEGORIES.forEach(c => {
+          setDoc(doc(db, 'categories', c.id), c).catch(err =>
+            handleFirestoreError(err, OperationType.WRITE, `categories/${c.id}`)
+          );
+        });
+        setCategories(DEFAULT_CATEGORIES);
+      } else {
+        const loaded: SeatCategory[] = [];
+        snapshot.forEach(d => loaded.push(d.data() as SeatCategory));
+        setCategories(loaded);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'categories');
+    });
+    return () => unsub();
+  }, []);
+
+  // Real-time synchronization for Gate Admin Users
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'users'), (snapshot) => {
+      if (snapshot.empty) {
+        DEFAULT_USERS.forEach(u => {
+          setDoc(doc(db, 'users', u.username.toLowerCase()), u).catch(err =>
+            handleFirestoreError(err, OperationType.WRITE, `users/${u.username}`)
+          );
+        });
+        setUsers(DEFAULT_USERS);
+      } else {
+        const loaded: GateUser[] = [];
+        snapshot.forEach(d => loaded.push(d.data() as GateUser));
+        if (!loaded.some(u => u.username.toLowerCase() === 'bas')) {
+          const bas = { username: 'bas', name: 'Bas', isSuperAdmin: true, createdAt: new Date().toISOString() };
+          setDoc(doc(db, 'users', 'bas'), bas).catch(err =>
+            handleFirestoreError(err, OperationType.WRITE, 'users/bas')
+          );
+          loaded.unshift(bas);
+        }
+        setUsers(loaded);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'users');
+    });
+    return () => unsub();
+  }, []);
+
+  // Real-time synchronization for Bookings of currentShowId
+  useEffect(() => {
+    if (!currentShowId) return;
+    const unsub = onSnapshot(collection(db, 'shows', currentShowId, 'bookings'), (snapshot) => {
+      const loaded: Record<string, Booking> = {};
+      snapshot.forEach(d => {
+        const b = d.data() as Booking;
+        loaded[b.seatId] = b;
+      });
+      setBookings(loaded);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, `shows/${currentShowId}/bookings`);
+    });
+    return () => unsub();
+  }, [currentShowId]);
+
+  // Real-time synchronization for Seat Category assignments of currentShowId
+  useEffect(() => {
+    if (!currentShowId) return;
+    const unsub = onSnapshot(collection(db, 'shows', currentShowId, 'seatCategories'), (snapshot) => {
+      const initial: Record<string, string> = {};
+      ALL_SEATS_LIST.forEach(id => {
+        initial[id] = getDefaultCategoryId(id);
+      });
+      snapshot.forEach(d => {
+        const data = d.data() as { seatId: string; categoryId: string };
+        if (data.seatId && data.categoryId) {
+          initial[data.seatId] = data.categoryId;
+        }
+      });
+      setSeatCategoryMap(initial);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, `shows/${currentShowId}/seatCategories`);
+    });
+    return () => unsub();
+  }, [currentShowId]);
+
+  // Sync state to local storage as client-side offline cache
   useEffect(() => {
     localStorage.setItem('sucac_gate_users', JSON.stringify(users));
   }, [users]);
@@ -425,31 +553,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(`auditorium_seat_categories_${currentShowId}`, JSON.stringify(seatCategoryMap));
   }, [seatCategoryMap, currentShowId]);
-
-  // Load show data on show switch
-  useEffect(() => {
-    const savedBookings = localStorage.getItem(`auditorium_bookings_${currentShowId}`);
-    if (savedBookings) {
-      try { setBookings(JSON.parse(savedBookings)); } catch (e) { setBookings({}); }
-    } else {
-      setBookings({});
-    }
-
-    const savedCats = localStorage.getItem(`auditorium_seat_categories_${currentShowId}`);
-    if (savedCats) {
-      try { setSeatCategoryMap(JSON.parse(savedCats)); } catch (e) {
-        const initial: Record<string, string> = {};
-        ALL_SEATS_LIST.forEach(id => { initial[id] = getDefaultCategoryId(id); });
-        setSeatCategoryMap(initial);
-      }
-    } else {
-      const initial: Record<string, string> = {};
-      ALL_SEATS_LIST.forEach(id => { initial[id] = getDefaultCategoryId(id); });
-      setSeatCategoryMap(initial);
-    }
-
-    setSelectedSeats(new Set());
-  }, [currentShowId]);
 
   // GATEWALL LOGIN HANDLER
   const handleGateSubmit = (e: React.FormEvent) => {
@@ -480,7 +583,7 @@ export default function App() {
   };
 
   // SUPER ADMIN USER MANAGEMENT HANDLERS (Bas only)
-  const handleAddUser = (e: React.FormEvent) => {
+  const handleAddUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUsername.trim() || !newUserName.trim()) {
       showToast('Username and Name are required.', 'error');
@@ -502,16 +605,26 @@ export default function App() {
     setUsers(prev => [...prev, newUser]);
     setNewUsername('');
     setNewUserName('');
-    showToast(`User "${newUser.name}" (@${newUser.username}) added successfully!`, 'success');
+    try {
+      await setDoc(doc(db, 'users', cleanUsername), newUser);
+      showToast(`User "${newUser.name}" (@${newUser.username}) added & synced across all admins!`, 'success');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `users/${cleanUsername}`);
+    }
   };
 
-  const handleDeleteUser = (username: string) => {
+  const handleDeleteUser = async (username: string) => {
     if (username.toLowerCase() === 'bas') {
       showToast('Cannot delete Super Admin account "bas".', 'error');
       return;
     }
     setUsers(prev => prev.filter(u => u.username.toLowerCase() !== username.toLowerCase()));
-    showToast('User account removed.', 'info');
+    try {
+      await deleteDoc(doc(db, 'users', username.toLowerCase()));
+      showToast('User account removed from database.', 'info');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `users/${username}`);
+    }
   };
 
   // Metrics
@@ -583,7 +696,7 @@ export default function App() {
   };
 
   // Assign category to selected seats
-  const assignCategoryToSelected = (catId: string) => {
+  const assignCategoryToSelected = async (catId: string) => {
     if (selectedSeats.size === 0) {
       showToast('Select seats or row letters first to apply a category.', 'info');
       return;
@@ -596,12 +709,23 @@ export default function App() {
       });
       return next;
     });
+
+    try {
+      const batch = writeBatch(db);
+      selectedSeats.forEach(s => {
+        batch.set(doc(db, 'shows', currentShowId, 'seatCategories', s), { seatId: s, categoryId: catId });
+      });
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `shows/${currentShowId}/seatCategories`);
+    }
+
     showToast(`Assigned ${targetCat?.name || 'Category'} (₱${(targetCat?.price || 0).toLocaleString()}) to ${selectedSeats.size} seat(s)!`, 'success');
     setSelectedSeats(new Set());
   };
 
-  // Booking Submission (Secretly records who booked!)
-  const handleBookSelected = (e: React.FormEvent) => {
+  // Booking Submission (Secretly records who booked & syncs real-time to Firestore!)
+  const handleBookSelected = async (e: React.FormEvent) => {
     e.preventDefault();
     if (selectedSeats.size === 0) {
       showToast('Please select at least one seat to book.', 'error');
@@ -614,8 +738,10 @@ export default function App() {
 
     const timestamp = new Date().toISOString();
     const newBookingsMap = { ...bookings };
+    const batch = writeBatch(db);
+
     selectedSeats.forEach(seatId => {
-      newBookingsMap[seatId] = {
+      const bookingData: Booking = {
         seatId,
         patronName: patronName.trim(),
         patronId: patronId.trim(),
@@ -627,10 +753,19 @@ export default function App() {
         notes: bookingNotes.trim() || undefined,
         bookedAt: timestamp,
       };
+      newBookingsMap[seatId] = bookingData;
+      batch.set(doc(db, 'shows', currentShowId, 'bookings', seatId), bookingData);
     });
 
     setBookings(newBookingsMap);
-    showToast(`Successfully booked ${selectedSeats.size} seat(s) for ${patronName}!`, 'success');
+
+    try {
+      await batch.commit();
+      showToast(`Successfully booked and synced ${selectedSeats.size} seat(s) for ${patronName}!`, 'success');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `shows/${currentShowId}/bookings`);
+    }
+
     setSelectedSeats(new Set());
     setPatronName('');
     setPatronId('');
@@ -638,37 +773,45 @@ export default function App() {
   };
 
   // Release Seat
-  const handleReleaseSeat = (seatId: string) => {
+  const handleReleaseSeat = async (seatId: string) => {
     setBookings(prev => {
       const next = { ...prev };
       delete next[seatId];
       return next;
     });
     setInspectSeatId(null);
-    showToast(`Released seat ${seatId} back to inventory.`, 'info');
+
+    try {
+      await deleteDoc(doc(db, 'shows', currentShowId, 'bookings', seatId));
+      showToast(`Released seat ${seatId} back to inventory and synced.`, 'info');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `shows/${currentShowId}/bookings/${seatId}`);
+    }
   };
 
   // SHOW MANAGEMENT FUNCTIONS
-  const handleSaveShow = (e: React.FormEvent) => {
+  const handleSaveShow = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!showFormTitle.trim() || !showFormDate || !showFormTime.trim()) {
       showToast('Please fill out all show details.', 'error');
       return;
     }
 
+    let targetShow: Show;
     if (editingShowId) {
-      setShows(prev => prev.map(s => s.id === editingShowId ? {
-        ...s,
+      targetShow = {
+        id: editingShowId,
         title: showFormTitle.trim(),
         description: showFormDescription.trim() || undefined,
         date: showFormDate,
         time: showFormTime.trim(),
         type: showFormType,
-      } : s));
-      showToast('Show schedule updated!', 'success');
+      };
+      setShows(prev => prev.map(s => s.id === editingShowId ? targetShow : s));
+      showToast('Show schedule updated & synced!', 'success');
     } else {
       const newId = `show-${Date.now()}`;
-      const newShow: Show = {
+      targetShow = {
         id: newId,
         title: showFormTitle.trim(),
         description: showFormDescription.trim() || undefined,
@@ -676,9 +819,15 @@ export default function App() {
         time: showFormTime.trim(),
         type: showFormType,
       };
-      setShows(prev => [...prev, newShow]);
+      setShows(prev => [...prev, targetShow]);
       setCurrentShowId(newId);
-      showToast(`Added new show "${newShow.title}"!`, 'success');
+      showToast(`Added new show "${targetShow.title}" & synced!`, 'success');
+    }
+
+    try {
+      await setDoc(doc(db, 'shows', targetShow.id), targetShow);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `shows/${targetShow.id}`);
     }
 
     setEditingShowId(null);
@@ -697,7 +846,7 @@ export default function App() {
     setShowFormType(show.type);
   };
 
-  const handleDeleteShow = (id: string) => {
+  const handleDeleteShow = async (id: string) => {
     if (shows.length <= 1) {
       showToast('Cannot delete the only remaining show.', 'error');
       return;
@@ -710,11 +859,17 @@ export default function App() {
       const next = shows.find(s => s.id !== id);
       if (next) setCurrentShowId(next.id);
     }
-    showToast('Show deleted.', 'info');
+
+    try {
+      await deleteDoc(doc(db, 'shows', id));
+      showToast('Show deleted from Firestore.', 'info');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `shows/${id}`);
+    }
   };
 
   // CATEGORY MANAGEMENT FUNCTIONS
-  const handleSaveCategory = (e: React.FormEvent) => {
+  const handleSaveCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!categoryFormName.trim()) {
       showToast('Category name is required.', 'error');
@@ -722,24 +877,32 @@ export default function App() {
     }
     const priceNum = Math.max(0, parseInt(categoryFormPrice) || 0);
 
+    let targetCat: SeatCategory;
     if (editingCategoryId) {
-      setCategories(prev => prev.map(c => c.id === editingCategoryId ? {
-        ...c,
+      targetCat = {
+        id: editingCategoryId,
         name: categoryFormName.trim(),
         color: categoryFormColor,
         price: priceNum,
-      } : c));
-      showToast('Category updated!', 'success');
+      };
+      setCategories(prev => prev.map(c => c.id === editingCategoryId ? targetCat : c));
+      showToast('Category updated & synced!', 'success');
     } else {
       const newId = `cat-${Date.now()}`;
-      const newCat: SeatCategory = {
+      targetCat = {
         id: newId,
         name: categoryFormName.trim(),
         color: categoryFormColor,
         price: priceNum,
       };
-      setCategories(prev => [...prev, newCat]);
-      showToast(`Added new category "${newCat.name}" (₱${priceNum.toLocaleString()})!`, 'success');
+      setCategories(prev => [...prev, targetCat]);
+      showToast(`Added new category "${targetCat.name}" (₱${priceNum.toLocaleString()}) & synced!`, 'success');
+    }
+
+    try {
+      await setDoc(doc(db, 'categories', targetCat.id), targetCat);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `categories/${targetCat.id}`);
     }
 
     setEditingCategoryId(null);
@@ -755,7 +918,7 @@ export default function App() {
     setCategoryFormPrice(cat.price ? String(cat.price) : '0');
   };
 
-  const handleDeleteCategory = (catId: string) => {
+  const handleDeleteCategory = async (catId: string) => {
     if (categories.length <= 1) {
       showToast('Cannot delete the only remaining category.', 'error');
       return;
@@ -772,7 +935,13 @@ export default function App() {
       });
       return next;
     });
-    showToast(`Category "${cat?.name}" removed.`, 'info');
+
+    try {
+      await deleteDoc(doc(db, 'categories', catId));
+      showToast(`Category "${cat?.name}" removed from Firestore.`, 'info');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `categories/${catId}`);
+    }
   };
 
   // CSV Export

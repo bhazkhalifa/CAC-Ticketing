@@ -1,0 +1,105 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net default-deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidShow(data) {
+      return data.keys().hasAll(['id', 'title', 'date', 'time', 'type']) &&
+             data.keys().hasOnly(['id', 'title', 'date', 'time', 'type', 'description']) &&
+             data.id is string && data.id.size() <= 100 &&
+             data.title is string && data.title.size() <= 200 &&
+             data.date is string && data.date.size() <= 50 &&
+             data.time is string && data.time.size() <= 50 &&
+             data.type is string && data.type.size() <= 50 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500));
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['id', 'name', 'color', 'price']) &&
+             data.keys().hasOnly(['id', 'name', 'color', 'price']) &&
+             data.id is string && data.id.size() <= 100 &&
+             data.name is string && data.name.size() <= 100 &&
+             data.color is string && data.color.size() <= 20 &&
+             data.price is number && data.price >= 0;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['username', 'name', 'createdAt']) &&
+             data.keys().hasOnly(['username', 'name', 'isSuperAdmin', 'createdAt']) &&
+             data.username is string && data.username.size() <= 100 &&
+             data.name is string && data.name.size() <= 150 &&
+             data.createdAt is string && data.createdAt.size() <= 60 &&
+             (!('isSuperAdmin' in data) || data.isSuperAdmin is bool);
+    }
+
+    function isValidBooking(data) {
+      return data.keys().hasAll(['seatId', 'patronName', 'patronId', 'paymentMethod', 'categoryId', 'bookedByUsername', 'bookedByName', 'bookedAt']) &&
+             data.keys().hasOnly(['seatId', 'patronName', 'patronId', 'paymentMethod', 'categoryId', 'bookedByUsername', 'bookedByName', 'bookedAt', 'notes']) &&
+             data.seatId is string && data.seatId.size() <= 50 &&
+             data.patronName is string && data.patronName.size() <= 200 &&
+             data.patronId is string && data.patronId.size() <= 100 &&
+             data.paymentMethod is string && data.paymentMethod.size() <= 100 &&
+             data.categoryId is string && data.categoryId.size() <= 100 &&
+             data.bookedByUsername is string && data.bookedByUsername.size() <= 100 &&
+             data.bookedByName is string && data.bookedByName.size() <= 150 &&
+             data.bookedAt is string && data.bookedAt.size() <= 60 &&
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 500));
+    }
+
+    function isValidSeatCat(data) {
+      return data.keys().hasAll(['seatId', 'categoryId']) &&
+             data.keys().hasOnly(['seatId', 'categoryId']) &&
+             data.seatId is string && data.seatId.size() <= 50 &&
+             data.categoryId is string && data.categoryId.size() <= 100;
+    }
+
+    // Shows collection
+    match /shows/{showId} {
+      allow read: if true;
+      allow create, update: if isValidId(showId) && isValidShow(request.resource.data);
+      allow delete: if isValidId(showId);
+
+      // Bookings subcollection for this show
+      match /bookings/{seatId} {
+        allow read: if true;
+        allow create, update: if isValidId(seatId) && isValidBooking(request.resource.data);
+        allow delete: if isValidId(seatId);
+      }
+
+      // Seat Category Mappings subcollection for this show
+      match /seatCategories/{seatId} {
+        allow read: if true;
+        allow create, update: if isValidId(seatId) && isValidSeatCat(request.resource.data);
+        allow delete: if isValidId(seatId);
+      }
+    }
+
+    // Seat Categories collection
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow create, update: if isValidId(categoryId) && isValidCategory(request.resource.data);
+      allow delete: if isValidId(categoryId);
+    }
+
+    // Authorized Gate Users
+    match /users/{username} {
+      allow read: if true;
+      allow create, update: if isValidId(username) && isValidUser(request.resource.data);
+      allow delete: if isValidId(username);
+    }
+
+    // Connection test doc
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+  }
+}
