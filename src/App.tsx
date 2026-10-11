@@ -164,10 +164,20 @@ const LOWER_TIER_CONFIG: TierRowConfig[] = [
   { row: 'A', left: [1, 9],  center: [10, 20], right: [21, 29] },
 ];
 
+export const SHOW_TYPES = [
+  'Gala Season Pass',
+  'Gala Show',
+  'Matinee Season Pass',
+  'Matinee Show',
+  'Regular Show',
+] as const;
+
+export type ShowType = typeof SHOW_TYPES[number];
+
 const DEFAULT_SHOWS: Show[] = [
-  { id: 'show-bonikid-gala', title: 'BONIKID Gala Premiere', description: 'A Silliman University Cultural Affairs Committee Musical Stage Presentation', date: '2026-10-16', time: '7:00 PM', type: 'GALA' },
-  { id: 'show-bonikid-matinee', title: 'BONIKID Saturday Matinee', description: 'Afternoon Student Matinee Performance', date: '2026-10-17', time: '2:00 PM', type: 'MATINEE' },
-  { id: 'show-bonikid-closing', title: 'BONIKID Closing Gala', description: 'Grand Finale & Closing Production', date: '2026-10-18', time: '7:00 PM', type: 'GALA' },
+  { id: 'show-bonikid-gala', title: 'BONIKID Gala Premiere', description: 'A Silliman University Cultural Affairs Committee Musical Stage Presentation', date: '2026-10-16', time: '7:00 PM', type: 'Gala Show' },
+  { id: 'show-bonikid-matinee', title: 'BONIKID Saturday Matinee', description: 'Afternoon Student Matinee Performance', date: '2026-10-17', time: '2:00 PM', type: 'Matinee Show' },
+  { id: 'show-bonikid-closing', title: 'BONIKID Closing Gala', description: 'Grand Finale & Closing Production', date: '2026-10-18', time: '7:00 PM', type: 'Gala Show' },
 ];
 
 const DEFAULT_CATEGORIES: SeatCategory[] = [
@@ -372,7 +382,7 @@ export default function App() {
   const [showFormDescription, setShowFormDescription] = useState('');
   const [showFormDate, setShowFormDate] = useState('');
   const [showFormTime, setShowFormTime] = useState('');
-  const [showFormType, setShowFormType] = useState('GALA');
+  const [showFormType, setShowFormType] = useState<string>('Gala Season Pass');
 
   // Edit/Add Category Form in Modal
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
@@ -906,6 +916,7 @@ export default function App() {
     setShowFormDescription('');
     setShowFormDate('');
     setShowFormTime('');
+    setShowFormType('Gala Season Pass');
   };
 
   const handleStartEditShow = (show: Show) => {
@@ -2836,19 +2847,38 @@ export default function App() {
                         onChange={e => setShowFormType(e.target.value)}
                         className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500 cursor-pointer"
                       >
-                        <option value="GALA">GALA Premiere</option>
-                        <option value="MATINEE">Matinee Afternoon</option>
-                        <option value="REGULAR">Regular Evening</option>
-                        <option value="SPECIAL">Special Sponsor Show</option>
+                        {SHOW_TYPES.map(type => (
+                          <option key={type} value={type}>
+                            {type}
+                          </option>
+                        ))}
                       </select>
                     </div>
 
-                    <button
-                      type="submit"
-                      className="w-full py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs transition cursor-pointer"
-                    >
-                      {editingShowId ? 'Update Show Details' : 'Create Show Schedule'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="submit"
+                        className="flex-1 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs transition cursor-pointer"
+                      >
+                        {editingShowId ? 'Update Show Details' : 'Create Show Schedule'}
+                      </button>
+                      {editingShowId && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingShowId(null);
+                            setShowFormTitle('');
+                            setShowFormDescription('');
+                            setShowFormDate('');
+                            setShowFormTime('');
+                            setShowFormType('Gala Season Pass');
+                          }}
+                          className="py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded-lg text-xs transition cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
                   </form>
                 </div>
               ) : (
