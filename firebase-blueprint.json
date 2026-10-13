@@ -137,6 +137,16 @@
           "description": "Optional reservation notes or remarks",
           "maxLength": 500
         },
+        "proofOfPaymentData": {
+          "type": "string",
+          "description": "Optional compressed Base64 data URL for payment proof screenshot",
+          "maxLength": 450000
+        },
+        "proofOfPaymentName": {
+          "type": "string",
+          "description": "Original file name of uploaded payment proof",
+          "maxLength": 200
+        },
         "bookedAt": {
           "type": "string",
           "description": "ISO timestamp when the seat was reserved",

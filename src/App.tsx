@@ -34,7 +34,10 @@ import {
   UploadCloud,
   FileText,
   DollarSign,
-  Gift
+  Gift,
+  Eye,
+  Download,
+  Loader2
 } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import {
@@ -79,8 +82,72 @@ export interface Booking {
   bookedByUsername: string; // Secretly recorded!
   bookedByName: string; // Secretly recorded!
   notes?: string;
+  proofOfPaymentData?: string; // Compressed Base64 Data URL (<300KB)
+  proofOfPaymentName?: string; // Original uploaded file name
   bookedAt: string;
 }
+
+// Compress uploaded receipt image to lightweight WebP/JPEG data URL (<300KB)
+export const compressReceiptImage = (file: File): Promise<{ dataUrl: string; compressedSizeKb: number }> => {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        resolve({ dataUrl, compressedSizeKb: Math.round(file.size / 1024) });
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxDimension = 1200;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          } else {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve({ dataUrl: e.target?.result as string, compressedSizeKb: Math.round(file.size / 1024) });
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+        // Attempt webp at 0.75 quality, fallback to jpeg
+        let dataUrl = canvas.toDataURL('image/webp', 0.75);
+        if (!dataUrl.startsWith('data:image/webp')) {
+          dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+        }
+
+        const head = dataUrl.indexOf(',');
+        const b64Length = dataUrl.length - (head + 1);
+        const approxSizeKb = Math.round((b64Length * 3) / 4 / 1024);
+
+        resolve({ dataUrl, compressedSizeKb: approxSizeKb });
+      };
+      img.onerror = reject;
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+};
 
 interface TierRowConfig {
   row: string;
@@ -393,25 +460,45 @@ export default function App() {
   const [staffId, setStaffId] = useState('');
   const [onlineGCash, setOnlineGCash] = useState(false);
   const [onlineOtherBanks, setOnlineOtherBanks] = useState(false);
-  const [proofOfPaymentFile, setProofOfPaymentFile] = useState<{ name: string; size: string; type: string } | null>(null);
+  const [proofOfPaymentFile, setProofOfPaymentFile] = useState<{
+    name: string;
+    size: string;
+    originalSize?: string;
+    type: string;
+    dataUrl?: string;
+  } | null>(null);
+  const [isCompressingReceipt, setIsCompressingReceipt] = useState(false);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [bookingNotes, setBookingNotes] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileUpload = (files: FileList | null) => {
+  const handleFileUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const file = files[0];
-    const sizeInKb = (file.size / 1024).toFixed(1);
-    setProofOfPaymentFile({
-      name: file.name,
-      size: `${sizeInKb} KB`,
-      type: file.type || 'document',
-    });
-    showToast(`Proof of payment attached: ${file.name}`, 'info');
+    const originalKb = (file.size / 1024).toFixed(1);
+
+    setIsCompressingReceipt(true);
+    try {
+      const { dataUrl, compressedSizeKb } = await compressReceiptImage(file);
+      setProofOfPaymentFile({
+        name: file.name,
+        size: `${compressedSizeKb} KB`,
+        originalSize: `${originalKb} KB`,
+        type: file.type || 'image/jpeg',
+        dataUrl,
+      });
+      showToast(`Proof of payment attached & compressed to ${compressedSizeKb} KB!`, 'success');
+    } catch (err) {
+      console.error('Failed to compress receipt image', err);
+      showToast('Could not process this file. Please choose an image receipt.', 'error');
+    } finally {
+      setIsCompressingReceipt(false);
+    }
   };
 
   // Modals State
   const [inspectSeatId, setInspectSeatId] = useState<string | null>(null);
+  const [viewingReceipt, setViewingReceipt] = useState<Booking | null>(null);
   const [isEditShowsModalOpen, setIsEditShowsModalOpen] = useState(false);
   const [modalActiveTab, setModalActiveTab] = useState<'SHOWS' | 'CATEGORIES'>('SHOWS');
 
@@ -998,6 +1085,12 @@ export default function App() {
         notes: computedNotes || '',
         bookedAt: timestamp,
       };
+
+      if (paymentMethod === 'Online Payment' && proofOfPaymentFile?.dataUrl) {
+        bookingData.proofOfPaymentData = proofOfPaymentFile.dataUrl;
+        bookingData.proofOfPaymentName = proofOfPaymentFile.name;
+      }
+
       newBookingsMap[seatId] = bookingData;
       batch.set(doc(db, 'shows', currentShowId, 'bookings', seatId), bookingData);
     });
@@ -1206,8 +1299,8 @@ export default function App() {
     
     // Only Bas gets the staff attribution column in CSV!
     const headers = currentUser?.isSuperAdmin
-      ? ['Show ID', 'Seat Number', 'Patron Name', 'ID Number', 'Category / Section', 'Ticket Price', 'Payment Channel', 'Booked By Staff', 'Notes', 'Booked At']
-      : ['Show ID', 'Seat Number', 'Patron Name', 'ID Number', 'Category / Section', 'Ticket Price', 'Payment Channel', 'Notes', 'Booked At'];
+      ? ['Show ID', 'Seat Number', 'Patron Name', 'ID Number', 'Category / Section', 'Ticket Price', 'Payment Channel', 'Proof Receipt Attached', 'Booked By Staff', 'Notes', 'Booked At']
+      : ['Show ID', 'Seat Number', 'Patron Name', 'ID Number', 'Category / Section', 'Ticket Price', 'Payment Channel', 'Proof Receipt Attached', 'Notes', 'Booked At'];
 
     const rows = [headers.join(',')];
     list.forEach(item => {
@@ -1220,6 +1313,7 @@ export default function App() {
         `"${cat?.name || 'Standard'}"`,
         `"₱${(cat?.price || 0).toLocaleString()}"`,
         `"${item.paymentMethod.replace(/"/g, '""')}"`,
+        `"${item.proofOfPaymentData ? (item.proofOfPaymentName ? `Yes (${item.proofOfPaymentName})` : 'Yes (Receipt Attached)') : 'No'}"`,
       ];
       if (currentUser?.isSuperAdmin) {
         rowData.push(`"${item.bookedByName || 'Bas'} (@${item.bookedByUsername || 'bas'})"`);
@@ -2459,28 +2553,71 @@ export default function App() {
                             className="hidden"
                           />
 
-                          {proofOfPaymentFile ? (
-                            <div className="p-2.5 rounded-xl border border-cyan-500/40 bg-cyan-950/30 flex items-center justify-between gap-2">
+                          {isCompressingReceipt ? (
+                            <div className="p-4 rounded-xl border border-cyan-500/40 bg-cyan-950/40 flex items-center justify-center gap-2.5 text-xs text-cyan-300">
+                              <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+                              <span>Compressing receipt image to &lt;300 KB...</span>
+                            </div>
+                          ) : proofOfPaymentFile ? (
+                            <div className="p-2.5 rounded-xl border border-cyan-500/40 bg-cyan-950/30 flex items-center justify-between gap-2.5">
                               <div className="flex items-center gap-2.5 overflow-hidden">
-                                <div className="w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center flex-shrink-0">
-                                  <FileText className="w-4 h-4" />
-                                </div>
+                                {proofOfPaymentFile.dataUrl ? (
+                                  <img
+                                    src={proofOfPaymentFile.dataUrl}
+                                    alt="Receipt preview"
+                                    className="w-10 h-10 rounded-lg object-cover border border-cyan-500/30 flex-shrink-0 bg-slate-900"
+                                  />
+                                ) : (
+                                  <div className="w-10 h-10 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center flex-shrink-0">
+                                    <FileText className="w-5 h-5" />
+                                  </div>
+                                )}
                                 <div className="truncate text-xs">
-                                  <div className="font-medium text-white truncate">{proofOfPaymentFile.name}</div>
-                                  <div className="text-[10px] text-cyan-300 font-mono">{proofOfPaymentFile.size}</div>
+                                  <div className="font-medium text-white truncate max-w-[200px]">{proofOfPaymentFile.name}</div>
+                                  <div className="text-[10px] text-cyan-300 flex items-center gap-1 font-mono">
+                                    <span>{proofOfPaymentFile.size}</span>
+                                    {proofOfPaymentFile.originalSize && (
+                                      <span className="text-slate-400 text-[9px]">(from {proofOfPaymentFile.originalSize})</span>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setProofOfPaymentFile(null);
-                                  if (fileInputRef.current) fileInputRef.current.value = '';
-                                }}
-                                className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-900 transition cursor-pointer"
-                                title="Remove proof file"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
+                              <div className="flex items-center gap-1">
+                                {proofOfPaymentFile.dataUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setViewingReceipt({
+                                        seatId: Array.from(selectedSeats).join(', '),
+                                        patronName: patronName || 'Preview',
+                                        patronId: studentId || staffId || 'Online Payment',
+                                        paymentMethod: 'Online Payment',
+                                        categoryId: 'preview',
+                                        bookedByUsername: currentUser?.username || 'bas',
+                                        bookedByName: currentUser?.name || 'Bas',
+                                        proofOfPaymentData: proofOfPaymentFile.dataUrl,
+                                        proofOfPaymentName: proofOfPaymentFile.name,
+                                        bookedAt: new Date().toISOString(),
+                                      });
+                                    }}
+                                    className="p-1.5 rounded-lg text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/60 transition cursor-pointer"
+                                    title="Preview receipt full-size"
+                                  >
+                                    <Eye className="w-4 h-4" />
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setProofOfPaymentFile(null);
+                                    if (fileInputRef.current) fileInputRef.current.value = '';
+                                  }}
+                                  className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-900 transition cursor-pointer"
+                                  title="Remove proof file"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
                             </div>
                           ) : (
                             <div
@@ -2509,7 +2646,7 @@ export default function App() {
                                 Drag & drop receipt here, or <span className="text-cyan-400 font-semibold underline">browse</span>
                               </div>
                               <div className="text-[10px] text-slate-500">
-                                PNG, JPG, PDF receipt screenshot (optional)
+                                Automatically compressed &lt;300 KB • PNG, JPG, WebP
                               </div>
                             </div>
                           )}
@@ -2750,6 +2887,7 @@ export default function App() {
                       <th className="py-3 px-3">ID Number</th>
                       <th className="py-3 px-3">Category & Price</th>
                       <th className="py-3 px-3">Billing Channel</th>
+                      <th className="py-3 px-3 text-cyan-400">Proof / Receipt</th>
                       {/* SUPER ADMIN (BAS) ONLY COLUMN: Who booked it! */}
                       {currentUser?.isSuperAdmin && (
                         <th className="py-3 px-3 text-amber-400">Booked By (Staff)</th>
@@ -2784,6 +2922,36 @@ export default function App() {
                             <span className="inline-block px-2 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-200 border border-slate-700">
                               {item.paymentMethod}
                             </span>
+                          </td>
+
+                          {/* Proof / Receipt Column */}
+                          <td className="py-2.5 px-3">
+                            {item.proofOfPaymentData ? (
+                              <button
+                                type="button"
+                                onClick={() => setViewingReceipt(item)}
+                                className="group flex items-center gap-2 p-1 rounded-lg border border-slate-700 hover:border-cyan-400 bg-slate-900/90 hover:bg-slate-800 transition cursor-pointer text-left"
+                                title="Click to view full receipt image"
+                              >
+                                <img
+                                  src={item.proofOfPaymentData}
+                                  alt="Receipt thumbnail"
+                                  className="w-8 h-8 rounded object-cover border border-slate-800 group-hover:scale-105 transition flex-shrink-0 bg-slate-950"
+                                />
+                                <div className="flex flex-col overflow-hidden max-w-[90px]">
+                                  <span className="text-[10px] font-bold text-cyan-400 group-hover:underline flex items-center gap-0.5">
+                                    <Eye className="w-2.5 h-2.5" /> View
+                                  </span>
+                                  <span className="text-[9px] text-slate-400 truncate font-mono">
+                                    {item.proofOfPaymentName || 'Receipt'}
+                                  </span>
+                                </div>
+                              </button>
+                            ) : item.paymentMethod === 'Online Payment' ? (
+                              <span className="text-[10px] text-slate-500 italic">No upload</span>
+                            ) : (
+                              <span className="text-[10px] text-slate-600">—</span>
+                            )}
                           </td>
 
                           {/* SUPER ADMIN (BAS) ONLY CELL: View staff who performed booking */}
@@ -3592,6 +3760,20 @@ export default function App() {
                   <span className="text-slate-400">Notes / Department:</span>
                   <span className="text-slate-300 italic">{bookings[inspectSeatId].notes || 'None'}</span>
                 </div>
+
+                {bookings[inspectSeatId]?.proofOfPaymentData && (
+                  <div className="flex items-center justify-between border-t border-slate-800 pt-2 pb-1">
+                    <span className="text-slate-400">Payment Receipt:</span>
+                    <button
+                      type="button"
+                      onClick={() => setViewingReceipt(bookings[inspectSeatId])}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[11px] font-semibold cursor-pointer transition"
+                    >
+                      <Eye className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>View Receipt Image</span>
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="py-6 text-center text-xs text-slate-400">
@@ -3614,6 +3796,97 @@ export default function App() {
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* RECEIPT LIGHTBOX MODAL */}
+      {viewingReceipt && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => setViewingReceipt(null)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700 w-full max-w-2xl max-h-[90vh] rounded-2xl p-5 shadow-2xl flex flex-col text-left relative"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
+                  <FileText className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-white flex items-center gap-2">
+                    <span>Proof of Payment Receipt</span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
+                      Seat {viewingReceipt.seatId}
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Patron: <span className="font-medium text-slate-200">{viewingReceipt.patronName}</span>
+                    {viewingReceipt.patronId && (
+                      <span className="ml-2 font-mono text-slate-400">({viewingReceipt.patronId})</span>
+                    )}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {viewingReceipt.proofOfPaymentData && (
+                  <a
+                    href={viewingReceipt.proofOfPaymentData}
+                    download={viewingReceipt.proofOfPaymentName || `receipt_${viewingReceipt.seatId}.webp`}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition cursor-pointer"
+                    title="Download receipt image"
+                  >
+                    <Download className="w-4 h-4" />
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setViewingReceipt(null)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                  title="Close receipt preview"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Receipt Image Display */}
+            <div className="flex-1 overflow-auto my-3 flex items-center justify-center bg-slate-950/80 rounded-xl p-2 border border-slate-800/80 min-h-[300px]">
+              {viewingReceipt.proofOfPaymentData ? (
+                <img
+                  src={viewingReceipt.proofOfPaymentData}
+                  alt="Proof of payment receipt"
+                  className="max-h-[60vh] max-w-full rounded-lg object-contain shadow-md"
+                />
+              ) : (
+                <div className="text-center py-12 text-slate-500 text-xs">
+                  No image data available for this receipt.
+                </div>
+              )}
+            </div>
+
+            {/* Footer with Metadata */}
+            <div className="pt-2 border-t border-slate-800 flex flex-wrap items-center justify-between text-[11px] text-slate-400 gap-2">
+              <div className="flex items-center gap-3">
+                <span>Method: <strong className="text-slate-200">{viewingReceipt.paymentMethod}</strong></span>
+                {viewingReceipt.proofOfPaymentName && (
+                  <span className="font-mono text-slate-400 truncate max-w-[200px]">File: {viewingReceipt.proofOfPaymentName}</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span>Booked: {new Date(viewingReceipt.bookedAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</span>
+                <button
+                  type="button"
+                  onClick={() => setViewingReceipt(null)}
+                  className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium transition cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>

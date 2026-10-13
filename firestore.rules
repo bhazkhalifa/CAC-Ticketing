@@ -43,7 +43,7 @@ service cloud.firestore {
 
     function isValidBooking(data) {
       return data.keys().hasAll(['seatId', 'patronName', 'patronId', 'paymentMethod', 'categoryId', 'bookedByUsername', 'bookedByName', 'bookedAt']) &&
-             data.keys().hasOnly(['seatId', 'patronName', 'patronId', 'paymentMethod', 'categoryId', 'bookedByUsername', 'bookedByName', 'bookedAt', 'notes']) &&
+             data.keys().hasOnly(['seatId', 'patronName', 'patronId', 'paymentMethod', 'categoryId', 'bookedByUsername', 'bookedByName', 'bookedAt', 'notes', 'proofOfPaymentData', 'proofOfPaymentName']) &&
              data.seatId is string && data.seatId.size() <= 50 &&
              data.patronName is string && data.patronName.size() <= 200 &&
              data.patronId is string && data.patronId.size() <= 100 &&
@@ -52,7 +52,9 @@ service cloud.firestore {
              data.bookedByUsername is string && data.bookedByUsername.size() <= 100 &&
              data.bookedByName is string && data.bookedByName.size() <= 150 &&
              data.bookedAt is string && data.bookedAt.size() <= 60 &&
-             (!('notes' in data) || (data.notes is string && data.notes.size() <= 500));
+             (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+             (!('proofOfPaymentData' in data) || (data.proofOfPaymentData is string && data.proofOfPaymentData.size() <= 450000)) &&
+             (!('proofOfPaymentName' in data) || (data.proofOfPaymentName is string && data.proofOfPaymentName.size() <= 200));
     }
 
     function isValidSeatCat(data) {
