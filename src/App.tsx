@@ -151,10 +151,10 @@ const UPPER_TIER_CONFIG: TierRowConfig[] = [
 ];
 
 const LOWER_TIER_CONFIG: TierRowConfig[] = [
-  { row: 'K', left: [1, 10], center: [10, 25], right: [26, 35] },
-  { row: 'J', left: [1, 10], center: [10, 25], right: [26, 35] },
-  { row: 'I', left: [1, 10], center: [10, 25], right: [26, 35] },
-  { row: 'H', left: [1, 10], center: [10, 25], right: [26, 35] },
+  { row: 'K', left: [1, 10], center: [11, 25], right: [26, 35] },
+  { row: 'J', left: [1, 10], center: [11, 25], right: [26, 35] },
+  { row: 'I', left: [1, 10], center: [11, 25], right: [26, 35] },
+  { row: 'H', left: [1, 10], center: [11, 25], right: [26, 35] },
   { row: 'G', left: [1, 9],  center: [10, 23], right: [24, 32] },
   { row: 'F', left: [1, 9],  center: [10, 22], right: [23, 31] },
   { row: 'E', left: [1, 9],  center: [10, 22], right: [23, 31] },
