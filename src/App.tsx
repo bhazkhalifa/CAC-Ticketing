@@ -27,7 +27,10 @@ import {
   Users,
   KeyRound,
   UserCheck,
-  Focus
+  Focus,
+  Paintbrush,
+  MousePointerClick,
+  CheckSquare
 } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import {
@@ -350,6 +353,20 @@ export default function App() {
   // 1. DEFAULT ZOOM CHANGED FROM 60% TO 50%
   const [zoom, setZoom] = useState<number>(0.5);
   const [selectedSeats, setSelectedSeats] = useState<Set<string>>(new Set());
+
+  // Multi-Selection (Sweep / Drag) State for Category Assignment Mode
+  const [sweepSelectActive, setSweepSelectActive] = useState<boolean>(false);
+  const isMouseDownRef = useRef<boolean>(false);
+  const dragActionRef = useRef<'add' | 'remove'>('add');
+
+  // Track global mouse up to stop drag selection anywhere on the window
+  useEffect(() => {
+    const handleGlobalMouseUp = () => {
+      isMouseDownRef.current = false;
+    };
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
+  }, []);
 
   // SEAT THEME: Dark Theme vs Light Theme (Default: Light Mode)
   const [seatTheme, setSeatTheme] = useState<'dark' | 'light'>('light');
@@ -724,7 +741,7 @@ export default function App() {
     return total;
   }, [selectedSeats, seatCategoryMap, categories]);
 
-  // Seat Click Handler
+  // Seat Click Handler (for booking mode)
   const handleSeatClick = (seatId: string) => {
     if (mode === 'BOOKING') {
       if (bookings[seatId]) {
@@ -745,6 +762,94 @@ export default function App() {
         return next;
       });
     }
+  };
+
+  // Seat Mouse Down Handler (Handles initial click and initiates drag selection in Category mode)
+  const handleSeatMouseDown = (seatId: string) => {
+    isMouseDownRef.current = true;
+    if (mode === 'CATEGORY') {
+      setSelectedSeats(prev => {
+        const next = new Set(prev);
+        if (next.has(seatId)) {
+          dragActionRef.current = 'remove';
+          next.delete(seatId);
+        } else {
+          dragActionRef.current = 'add';
+          next.add(seatId);
+        }
+        return next;
+      });
+    }
+  };
+
+  // Seat Mouse Enter Handler (for drag selection or sweep/brush selection in Category mode)
+  const handleSeatMouseEnter = (seatId: string) => {
+    if (mode === 'CATEGORY') {
+      // 1. If Sweep/Brush select mode is ON, simply entering the seat selects it!
+      if (sweepSelectActive) {
+        setSelectedSeats(prev => {
+          if (prev.has(seatId)) return prev;
+          const next = new Set(prev);
+          next.add(seatId);
+          return next;
+        });
+        return;
+      }
+
+      // 2. If mouse is pressed down and dragging:
+      if (isMouseDownRef.current) {
+        setSelectedSeats(prev => {
+          if (dragActionRef.current === 'add') {
+            if (prev.has(seatId)) return prev;
+            const next = new Set(prev);
+            next.add(seatId);
+            return next;
+          } else {
+            if (!prev.has(seatId)) return prev;
+            const next = new Set(prev);
+            next.delete(seatId);
+            return next;
+          }
+        });
+      }
+    }
+  };
+
+  // Quick Batch Selection Helpers for Category Assignment Mode
+  const selectAllSeats = () => {
+    setSelectedSeats(new Set(ALL_SEATS_LIST));
+    showToast(`Selected all ${ALL_SEATS_LIST.length} seats.`, 'info');
+  };
+
+  const selectUpperTier = () => {
+    const upperSeats = ALL_SEATS_LIST.filter(id => 'LMNOPQRSTUVW'.includes(id.charAt(0)));
+    setSelectedSeats(prev => {
+      const next = new Set(prev);
+      upperSeats.forEach(id => next.add(id));
+      return next;
+    });
+    showToast(`Selected Upper Balcony seats (${upperSeats.length}).`, 'info');
+  };
+
+  const selectLowerTier = () => {
+    const lowerSeats = ALL_SEATS_LIST.filter(id => 'ABCDEFGHIJK'.includes(id.charAt(0)));
+    setSelectedSeats(prev => {
+      const next = new Set(prev);
+      lowerSeats.forEach(id => next.add(id));
+      return next;
+    });
+    showToast(`Selected Lower Orchestra seats (${lowerSeats.length}).`, 'info');
+  };
+
+  const invertSelection = () => {
+    setSelectedSeats(prev => {
+      const next = new Set<string>();
+      ALL_SEATS_LIST.forEach(id => {
+        if (!prev.has(id)) next.add(id);
+      });
+      return next;
+    });
+    showToast('Inverted seat selection.', 'info');
   };
 
   // Toggle Entire Row Selection
@@ -1176,10 +1281,23 @@ export default function App() {
       <button
         key={seatId}
         id={`seat-${seatId}`}
-        onClick={() => handleSeatClick(seatId)}
+        onMouseDown={(e) => {
+          if (mode === 'CATEGORY') {
+            e.preventDefault();
+            handleSeatMouseDown(seatId);
+          }
+        }}
+        onMouseEnter={() => handleSeatMouseEnter(seatId)}
+        onClick={() => {
+          if (mode === 'BOOKING') {
+            handleSeatClick(seatId);
+          }
+        }}
         style={customInlineStyle}
         title={isBooked ? `Booked: ${bookings[seatId].patronName} (${cat.name} • ₱${(cat.price || 0).toLocaleString()}) - Click to inspect/release` : `Seat ${seatId} • ${cat.name} (₱${(cat.price || 0).toLocaleString()})`}
-        className={`seat-btn font-mono-num transition flex items-center justify-center cursor-pointer border ${colorStyle}`}
+        className={`seat-btn font-mono-num transition flex items-center justify-center cursor-pointer border select-none ${
+          mode === 'CATEGORY' && sweepSelectActive ? 'hover:scale-110 hover:z-20 hover:ring-2 hover:ring-cyan-400' : ''
+        } ${colorStyle}`}
       >
         {seatNum}
       </button>
@@ -1532,6 +1650,7 @@ export default function App() {
               <button
                 onClick={() => {
                   setMode('BOOKING');
+                  setSweepSelectActive(false);
                   setSelectedSeats(new Set());
                 }}
                 className={`px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
@@ -1739,6 +1858,28 @@ export default function App() {
                     </button>
                   </div>
 
+                  {/* SWEEP MULTI-SELECT TOGGLE IN CATEGORY ASSIGNMENT MODE */}
+                  {mode === 'CATEGORY' && (
+                    <button
+                      onClick={() => {
+                        const next = !sweepSelectActive;
+                        setSweepSelectActive(next);
+                        showToast(next ? 'Sweep Select Active: Hover over seats to select' : 'Sweep Select OFF', 'info');
+                      }}
+                      className={`px-2.5 py-1 text-xs rounded-lg border flex items-center gap-1.5 transition cursor-pointer font-bold ${
+                        sweepSelectActive
+                          ? 'bg-cyan-500 text-slate-950 border-cyan-400 shadow-md shadow-cyan-500/30'
+                          : seatTheme === 'light'
+                            ? 'bg-white border-slate-300 text-slate-800 shadow-sm hover:bg-slate-50'
+                            : 'bg-slate-800 border-slate-700 text-slate-200 hover:text-white'
+                      }`}
+                      title={sweepSelectActive ? 'Sweep Multi-Select Active: Hover over seats to select them' : 'Turn on Sweep Multi-Select (Glide/hover over seats)'}
+                    >
+                      <Paintbrush className={`w-3.5 h-3.5 ${sweepSelectActive ? 'text-slate-950' : 'text-cyan-400'}`} />
+                      <span>{sweepSelectActive ? 'Sweep Select: ON' : 'Sweep Select'}</span>
+                    </button>
+                  )}
+
                   {/* CENTER VIEW BUTTON (NEAR ZOOM CONTROLS) */}
                   <button
                     onClick={handleCenterView}
@@ -1761,10 +1902,56 @@ export default function App() {
                         : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
                     }`}
                   >
-                    <X className="w-3 h-3" /> Deselect
+                    <X className="w-3 h-3" /> Deselect ({selectedSeats.size})
                   </button>
                 </div>
               </div>
+
+              {/* CATEGORY MODE MULTI-SELECT ACTIVE BANNER & DRAG TIP */}
+              {mode === 'CATEGORY' && (
+                sweepSelectActive ? (
+                  <div className="w-full mb-3 px-4 py-2.5 bg-gradient-to-r from-cyan-950 via-cyan-900/80 to-cyan-950 border border-cyan-500/50 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs shadow-lg shadow-cyan-500/10">
+                    <div className="flex items-center gap-2 text-cyan-200">
+                      <span className="p-1 rounded bg-cyan-500 text-slate-950 font-bold flex items-center justify-center">
+                        <Paintbrush className="w-3.5 h-3.5" />
+                      </span>
+                      <span>
+                        <strong className="text-white">Sweep Multi-Select Active:</strong> Glide your mouse over seats to select them with zero clicking!
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-cyan-300 font-mono font-bold bg-slate-950/60 px-2 py-0.5 rounded border border-cyan-500/30">
+                        {selectedSeats.size} Marked
+                      </span>
+                      <button
+                        onClick={() => setSelectedSeats(new Set())}
+                        className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white text-[11px] font-semibold cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                      <button
+                        onClick={() => setSweepSelectActive(false)}
+                        className="px-2.5 py-1 rounded bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-[11px] font-black cursor-pointer shadow"
+                      >
+                        Done Sweeping
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="w-full mb-2.5 px-3 py-1.5 bg-slate-950/60 border border-slate-800/80 rounded-lg flex items-center justify-between text-[11px] text-slate-400">
+                    <span className="flex items-center gap-1.5">
+                      <MousePointerClick className="w-3.5 h-3.5 text-cyan-400" />
+                      <span><strong>Multi-Select Tip:</strong> Click & drag your mouse across seats to select multiple seats, or click <strong>Sweep Select</strong> above to hover-select without holding the mouse.</span>
+                    </span>
+                    <button
+                      onClick={() => setSweepSelectActive(true)}
+                      className="text-cyan-400 hover:text-cyan-300 font-bold underline cursor-pointer ml-2 flex-shrink-0"
+                    >
+                      Enable Sweep Mode
+                    </button>
+                  </div>
+                )
+              )}
 
               {/* Seating Map Scrollable Shell */}
               <div ref={scrollContainerRef} className="overflow-x-auto overflow-y-auto max-h-[860px] pb-8 pt-2 w-full">
@@ -2164,6 +2351,77 @@ export default function App() {
                   <p className="text-xs text-slate-400">
                     Select seats or entire rows (A-W), then click any category below to apply the category, color, and price.
                   </p>
+
+                  {/* MULTI-SELECT TOOLS & SHORTCUTS */}
+                  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                        <MousePointerClick className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Multi-Select Tools</span>
+                      </span>
+                      <button
+                        onClick={() => {
+                          const next = !sweepSelectActive;
+                          setSweepSelectActive(next);
+                          showToast(next ? 'Sweep Select Active: Hover over seats to select' : 'Sweep Select OFF', 'info');
+                        }}
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold border transition cursor-pointer flex items-center gap-1 ${
+                          sweepSelectActive
+                            ? 'bg-cyan-500 text-slate-950 border-cyan-400 shadow-sm'
+                            : 'bg-slate-900 border-slate-700 text-slate-300 hover:text-white'
+                        }`}
+                        title="Toggle glide-to-select mode"
+                      >
+                        <Paintbrush className="w-3 h-3" />
+                        <span>{sweepSelectActive ? 'Sweep: ON' : 'Sweep: OFF'}</span>
+                      </button>
+                    </div>
+
+                    <div className="text-[11px] text-slate-400 leading-relaxed">
+                      Hold & drag across seats to multi-select, or use <strong>Sweep</strong> to select by gliding your cursor.
+                    </div>
+
+                    {/* Quick Batch Selection Buttons */}
+                    <div className="grid grid-cols-2 gap-1.5 pt-1">
+                      <button
+                        onClick={selectUpperTier}
+                        className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-[11px] font-semibold transition cursor-pointer text-left truncate"
+                        title="Select Upper Balcony (Rows L–W, 339 seats)"
+                      >
+                        + Upper Balcony (L–W)
+                      </button>
+                      <button
+                        onClick={selectLowerTier}
+                        className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-[11px] font-semibold transition cursor-pointer text-left truncate"
+                        title="Select Lower Orchestra (Rows A–K, 422 seats)"
+                      >
+                        + Lower Orchestra (A–K)
+                      </button>
+                      <button
+                        onClick={selectAllSeats}
+                        className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-[11px] font-semibold transition cursor-pointer text-left truncate"
+                        title="Select All 761 Seats"
+                      >
+                        + Select All (761)
+                      </button>
+                      <button
+                        onClick={invertSelection}
+                        className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-[11px] font-semibold transition cursor-pointer text-left truncate"
+                        title="Invert current seat selection"
+                      >
+                        ⇄ Invert Selection
+                      </button>
+                    </div>
+
+                    {selectedSeats.size > 0 && (
+                      <button
+                        onClick={() => setSelectedSeats(new Set())}
+                        className="w-full py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-rose-300 text-[11px] font-semibold transition cursor-pointer flex items-center justify-center gap-1"
+                      >
+                        <X className="w-3 h-3" /> Clear Marked ({selectedSeats.size})
+                      </button>
+                    )}
+                  </div>
 
                   <div className="space-y-2">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
