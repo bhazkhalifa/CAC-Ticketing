@@ -30,7 +30,11 @@ import {
   Focus,
   Paintbrush,
   MousePointerClick,
-  CheckSquare
+  CheckSquare,
+  UploadCloud,
+  FileText,
+  DollarSign,
+  Gift
 } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import {
@@ -384,9 +388,27 @@ export default function App() {
 
   // Booking Form State
   const [patronName, setPatronName] = useState('');
-  const [patronId, setPatronId] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState('Charge to Tuition');
+  const [paymentMethod, setPaymentMethod] = useState<'Charge to Tuition' | 'Payroll' | 'Cash' | 'Online Payment' | 'Complimentary'>('Charge to Tuition');
+  const [studentId, setStudentId] = useState('');
+  const [staffId, setStaffId] = useState('');
+  const [onlineGCash, setOnlineGCash] = useState(false);
+  const [onlineOtherBanks, setOnlineOtherBanks] = useState(false);
+  const [proofOfPaymentFile, setProofOfPaymentFile] = useState<{ name: string; size: string; type: string } | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [bookingNotes, setBookingNotes] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const file = files[0];
+    const sizeInKb = (file.size / 1024).toFixed(1);
+    setProofOfPaymentFile({
+      name: file.name,
+      size: `${sizeInKb} KB`,
+      type: file.type || 'document',
+    });
+    showToast(`Proof of payment attached: ${file.name}`, 'info');
+  };
 
   // Modals State
   const [inspectSeatId, setInspectSeatId] = useState<string | null>(null);
@@ -917,10 +939,47 @@ export default function App() {
       showToast('Please select at least one seat to book.', 'error');
       return;
     }
-    if (!patronName.trim() || !patronId.trim()) {
-      showToast('Patron name and ID number are required.', 'error');
+    if (!patronName.trim()) {
+      showToast('Patron name is required.', 'error');
       return;
     }
+
+    let computedPatronId = '';
+    if (paymentMethod === 'Charge to Tuition') {
+      if (!studentId.trim()) {
+        showToast('Student ID Number is required for Charge to Tuition.', 'error');
+        return;
+      }
+      computedPatronId = studentId.trim();
+    } else if (paymentMethod === 'Payroll') {
+      if (!staffId.trim()) {
+        showToast('Staff ID Number is required for Payroll deduction.', 'error');
+        return;
+      }
+      computedPatronId = staffId.trim();
+    } else if (paymentMethod === 'Cash') {
+      computedPatronId = 'Cash / Walk-in';
+    } else if (paymentMethod === 'Complimentary') {
+      computedPatronId = 'Complimentary / VIP';
+    } else if (paymentMethod === 'Online Payment') {
+      const channels: string[] = [];
+      if (onlineGCash) channels.push('GCash');
+      if (onlineOtherBanks) channels.push('Other Banks');
+      computedPatronId = channels.length > 0 ? channels.join(', ') : 'Online Payment';
+    }
+
+    const noteDetails: string[] = [];
+    if (paymentMethod === 'Online Payment') {
+      const channels: string[] = [];
+      if (onlineGCash) channels.push('GCash');
+      if (onlineOtherBanks) channels.push('Other Banks');
+      if (channels.length > 0) noteDetails.push(`Channel: ${channels.join(', ')}`);
+      if (proofOfPaymentFile) noteDetails.push(`Proof: ${proofOfPaymentFile.name} (${proofOfPaymentFile.size})`);
+    }
+    if (bookingNotes.trim()) {
+      noteDetails.push(bookingNotes.trim());
+    }
+    const computedNotes = noteDetails.join(' • ');
 
     const timestamp = new Date().toISOString();
     const newBookingsMap = { ...bookings };
@@ -930,13 +989,13 @@ export default function App() {
       const bookingData: Booking = {
         seatId,
         patronName: patronName.trim(),
-        patronId: patronId.trim(),
+        patronId: computedPatronId,
         paymentMethod,
         categoryId: seatCategoryMap[seatId] || getDefaultCategoryId(seatId),
         // Secretly record current logged-in user:
         bookedByUsername: currentUser?.username || 'bas',
         bookedByName: currentUser?.name || 'Bas',
-        notes: bookingNotes.trim() || '',
+        notes: computedNotes || '',
         bookedAt: timestamp,
       };
       newBookingsMap[seatId] = bookingData;
@@ -954,8 +1013,13 @@ export default function App() {
 
     setSelectedSeats(new Set());
     setPatronName('');
-    setPatronId('');
+    setStudentId('');
+    setStaffId('');
+    setOnlineGCash(false);
+    setOnlineOtherBanks(false);
+    setProofOfPaymentFile(null);
     setBookingNotes('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   // Release Seat
@@ -2267,9 +2331,10 @@ export default function App() {
 
                   {/* Booking Form */}
                   <form onSubmit={handleBookSelected} className="space-y-3">
+                    {/* 1. Name */}
                     <div>
                       <label className="block text-xs font-semibold text-slate-300 mb-1">
-                        Patron / Student Name <span className="text-rose-400">*</span>
+                        Name <span className="text-rose-400">*</span>
                       </label>
                       <input
                         type="text"
@@ -2281,37 +2346,178 @@ export default function App() {
                       />
                     </div>
 
+                    {/* 2. Payment Method */}
                     <div>
                       <label className="block text-xs font-semibold text-slate-300 mb-1">
-                        Student / Staff ID Number <span className="text-rose-400">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={patronId}
-                        onChange={e => setPatronId(e.target.value)}
-                        placeholder="e.g. 2024-00192"
-                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 font-mono-num"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-300 mb-1">
-                        Billing Channel <span className="text-rose-400">*</span>
+                        Payment Method <span className="text-rose-400">*</span>
                       </label>
                       <select
                         value={paymentMethod}
-                        onChange={e => setPaymentMethod(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500 cursor-pointer"
+                        onChange={e => setPaymentMethod(e.target.value as any)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500 cursor-pointer font-medium"
                       >
                         <option value="Charge to Tuition">Charge to Tuition</option>
-                        <option value="Student Account Billing">Student Account Billing</option>
-                        <option value="Payroll Deduction">Payroll Deduction</option>
-                        <option value="Complimentary / VIP Pass">Complimentary / VIP Pass</option>
-                        <option value="Cash / Front Gate">Cash / Front Gate</option>
+                        <option value="Payroll">Payroll</option>
+                        <option value="Cash">Cash</option>
+                        <option value="Online Payment">Online Payment</option>
+                        <option value="Complimentary">Complimentary</option>
                       </select>
                     </div>
 
+                    {/* 3. Conditional Fields based on Payment Method */}
+                    {paymentMethod === 'Charge to Tuition' && (
+                      <div className="bg-slate-950/70 p-3 rounded-xl border border-slate-800 space-y-1">
+                        <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center justify-between">
+                          <span>Student ID Number <span className="text-rose-400">*</span></span>
+                          <span className="text-[10px] text-amber-400 font-mono">Tuition Billing</span>
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={studentId}
+                          onChange={e => setStudentId(e.target.value)}
+                          placeholder="e.g. 2024-00192"
+                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 font-mono-num"
+                        />
+                        <span className="text-[10px] text-slate-400 block">Silliman University student identification number</span>
+                      </div>
+                    )}
+
+                    {paymentMethod === 'Payroll' && (
+                      <div className="bg-slate-950/70 p-3 rounded-xl border border-slate-800 space-y-1">
+                        <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center justify-between">
+                          <span>Staff ID Number <span className="text-rose-400">*</span></span>
+                          <span className="text-[10px] text-amber-400 font-mono">Payroll Deduction</span>
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={staffId}
+                          onChange={e => setStaffId(e.target.value)}
+                          placeholder="e.g. EMP-2023-441"
+                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 font-mono-num"
+                        />
+                        <span className="text-[10px] text-slate-400 block">Faculty or Staff employee ID number</span>
+                      </div>
+                    )}
+
+                    {paymentMethod === 'Cash' && (
+                      <div className="bg-emerald-950/30 p-3 rounded-xl border border-emerald-500/30 flex items-center gap-2.5 text-xs text-emerald-300">
+                        <DollarSign className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                        <span>Cash payment will be collected on-site at the gate / cashier booth.</span>
+                      </div>
+                    )}
+
+                    {paymentMethod === 'Complimentary' && (
+                      <div className="bg-purple-950/30 p-3 rounded-xl border border-purple-500/30 flex items-center gap-2.5 text-xs text-purple-300">
+                        <Gift className="w-4 h-4 text-purple-400 flex-shrink-0" />
+                        <span>Complimentary / VIP access pass authorized for selected seats.</span>
+                      </div>
+                    )}
+
+                    {paymentMethod === 'Online Payment' && (
+                      <div className="bg-slate-950/80 p-3 rounded-xl border border-cyan-500/30 space-y-3">
+                        {/* Checkboxes: GCash & Other Banks */}
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                            Online Payment Option:
+                          </label>
+                          <div className="flex flex-wrap gap-2.5">
+                            <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800 hover:border-slate-700 transition">
+                              <input
+                                type="checkbox"
+                                checked={onlineGCash}
+                                onChange={e => setOnlineGCash(e.target.checked)}
+                                className="rounded border-slate-700 text-cyan-500 focus:ring-cyan-500 cursor-pointer w-3.5 h-3.5"
+                              />
+                              <span className="font-semibold text-blue-400">GCash</span>
+                            </label>
+                            <label className="flex items-center gap-2 text-xs text-slate-200 cursor-pointer bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800 hover:border-slate-700 transition">
+                              <input
+                                type="checkbox"
+                                checked={onlineOtherBanks}
+                                onChange={e => setOnlineOtherBanks(e.target.checked)}
+                                className="rounded border-slate-700 text-cyan-500 focus:ring-cyan-500 cursor-pointer w-3.5 h-3.5"
+                              />
+                              <span className="font-semibold text-emerald-400">Other Banks</span>
+                            </label>
+                          </div>
+                        </div>
+
+                        {/* Upload Proof of Payment (Drag & drop, not required) */}
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center justify-between">
+                            <span>Upload Proof of Payment</span>
+                            <span className="text-[10px] text-slate-400 font-normal lowercase">(not required)</span>
+                          </label>
+
+                          <input
+                            type="file"
+                            ref={fileInputRef}
+                            onChange={e => handleFileUpload(e.target.files)}
+                            accept="image/*,.pdf"
+                            className="hidden"
+                          />
+
+                          {proofOfPaymentFile ? (
+                            <div className="p-2.5 rounded-xl border border-cyan-500/40 bg-cyan-950/30 flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2.5 overflow-hidden">
+                                <div className="w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center flex-shrink-0">
+                                  <FileText className="w-4 h-4" />
+                                </div>
+                                <div className="truncate text-xs">
+                                  <div className="font-medium text-white truncate">{proofOfPaymentFile.name}</div>
+                                  <div className="text-[10px] text-cyan-300 font-mono">{proofOfPaymentFile.size}</div>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setProofOfPaymentFile(null);
+                                  if (fileInputRef.current) fileInputRef.current.value = '';
+                                }}
+                                className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-900 transition cursor-pointer"
+                                title="Remove proof file"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <div
+                              onDragOver={e => {
+                                e.preventDefault();
+                                setIsDraggingFile(true);
+                              }}
+                              onDragLeave={e => {
+                                e.preventDefault();
+                                setIsDraggingFile(false);
+                              }}
+                              onDrop={e => {
+                                e.preventDefault();
+                                setIsDraggingFile(false);
+                                handleFileUpload(e.dataTransfer.files);
+                              }}
+                              onClick={() => fileInputRef.current?.click()}
+                              className={`p-3.5 rounded-xl border-2 border-dashed transition flex flex-col items-center justify-center gap-1.5 cursor-pointer text-center ${
+                                isDraggingFile
+                                  ? 'border-cyan-400 bg-cyan-950/40 text-cyan-300 scale-[1.01]'
+                                  : 'border-slate-700 hover:border-cyan-500/60 bg-slate-900/50 hover:bg-slate-900 text-slate-400'
+                              }`}
+                            >
+                              <UploadCloud className="w-5 h-5 text-cyan-400" />
+                              <div className="text-[11px] font-medium text-slate-200">
+                                Drag & drop receipt here, or <span className="text-cyan-400 font-semibold underline">browse</span>
+                              </div>
+                              <div className="text-[10px] text-slate-500">
+                                PNG, JPG, PDF receipt screenshot (optional)
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 4. Notes / Department / Section */}
                     <div>
                       <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center justify-between">
                         <span>Notes / Department / Section</span>
