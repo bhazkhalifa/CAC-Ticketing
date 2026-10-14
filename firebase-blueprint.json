@@ -172,6 +172,74 @@
         }
       },
       "required": ["seatId", "categoryId"]
+    },
+    "Activity": {
+      "title": "Activity",
+      "description": "Audit trail log of recent app actions for Super Admin Bas",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the activity log",
+          "maxLength": 128
+        },
+        "type": {
+          "type": "string",
+          "description": "Activity action type e.g. BOOKING, CANCELLATION, SHOW_UPDATE",
+          "maxLength": 50
+        },
+        "description": {
+          "type": "string",
+          "description": "Readable summary of the activity",
+          "maxLength": 500
+        },
+        "showId": {
+          "type": "string",
+          "description": "ID of the show associated with this activity",
+          "maxLength": 100
+        },
+        "showName": {
+          "type": "string",
+          "description": "Name or title of the show",
+          "maxLength": 200
+        },
+        "seatIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of seat IDs involved"
+        },
+        "patronName": {
+          "type": "string",
+          "description": "Name of the patron",
+          "maxLength": 200
+        },
+        "paymentMethod": {
+          "type": "string",
+          "description": "Payment method used",
+          "maxLength": 100
+        },
+        "performedByUsername": {
+          "type": "string",
+          "description": "Username of the staff who performed the action",
+          "maxLength": 100
+        },
+        "performedByName": {
+          "type": "string",
+          "description": "Display name of the staff who performed the action",
+          "maxLength": 150
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "ISO timestamp when the activity occurred",
+          "maxLength": 60
+        },
+        "details": {
+          "type": "string",
+          "description": "Extra metadata or details",
+          "maxLength": 500
+        }
+      },
+      "required": ["id", "type", "description", "showId", "showName", "performedByUsername", "performedByName", "timestamp"]
     }
   },
   "firestore": {
@@ -194,6 +262,10 @@
     "/shows/{showId}/seatCategories/{seatId}": {
       "schema": "SeatCategoryMap",
       "description": "Seat-to-category mapping for a specific show"
+    },
+    "/activities/{activityId}": {
+      "schema": "Activity",
+      "description": "Recent system activities and audit logs for Super Admin Bas"
     }
   }
 }

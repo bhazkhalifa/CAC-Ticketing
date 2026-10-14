@@ -37,7 +37,16 @@ import {
   Gift,
   Eye,
   Download,
-  Loader2
+  Loader2,
+  Activity,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  History,
+  Clock,
+  ArrowRight,
+  RefreshCw,
+  Filter
 } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import {
@@ -85,6 +94,21 @@ export interface Booking {
   proofOfPaymentData?: string; // Compressed Base64 Data URL (<300KB)
   proofOfPaymentName?: string; // Original uploaded file name
   bookedAt: string;
+}
+
+export interface ActivityLog {
+  id: string;
+  type: 'BOOKING' | 'CANCELLATION' | 'SHOW_UPDATE' | 'CATEGORY_UPDATE' | 'RECEIPT_UPLOAD';
+  description: string;
+  showId: string;
+  showName: string;
+  seatIds?: string[];
+  patronName?: string;
+  paymentMethod?: string;
+  performedByUsername: string;
+  performedByName: string;
+  timestamp: string;
+  details?: string;
 }
 
 // Compress uploaded receipt image to lightweight WebP/JPEG data URL (<300KB)
@@ -419,7 +443,7 @@ export default function App() {
 
   // Mode and View State
   const [mode, setMode] = useState<'BOOKING' | 'CATEGORY'>('BOOKING');
-  const [view, setView] = useState<'SEATING' | 'MANIFEST'>('SEATING');
+  const [view, setView] = useState<'SEATING' | 'MANIFEST' | 'ACTIVITIES'>('SEATING');
 
   // 1. DEFAULT ZOOM CHANGED FROM 60% TO 50%
   const [zoom, setZoom] = useState<number>(0.5);
@@ -499,6 +523,16 @@ export default function App() {
   // Modals State
   const [inspectSeatId, setInspectSeatId] = useState<string | null>(null);
   const [viewingReceipt, setViewingReceipt] = useState<Booking | null>(null);
+  const [uploadingReceiptSeatId, setUploadingReceiptSeatId] = useState<string | null>(null);
+  const [uploadModalBooking, setUploadModalBooking] = useState<Booking | null>(null);
+  const [modalReceiptPreview, setModalReceiptPreview] = useState<{
+    dataUrl: string;
+    fileName: string;
+    fileSizeKb: number;
+    originalKb: string;
+  } | null>(null);
+  const [isModalCompressing, setIsModalCompressing] = useState(false);
+  const [isModalDragging, setIsModalDragging] = useState(false);
   const [isEditShowsModalOpen, setIsEditShowsModalOpen] = useState(false);
   const [modalActiveTab, setModalActiveTab] = useState<'SHOWS' | 'CATEGORIES'>('SHOWS');
 
@@ -543,10 +577,20 @@ export default function App() {
     }, 150);
     return () => clearTimeout(timer);
   }, [currentShowId, zoom]);
-  // Manifest Filters
+  // Manifest Filters & Sorting
   const [manifestSearch, setManifestSearch] = useState('');
   const [manifestCategoryFilter, setManifestCategoryFilter] = useState('ALL');
   const [manifestStaffFilter, setManifestStaffFilter] = useState('ALL');
+  const [manifestSortField, setManifestSortField] = useState<'seatId' | 'patronName' | 'patronId' | 'category' | 'paymentMethod' | 'bookedByName' | 'bookedAt'>('bookedAt');
+  const [manifestSortDirection, setManifestSortDirection] = useState<'asc' | 'desc'>('desc');
+
+  // Super Admin (Bas) Activities State
+  const [activities, setActivities] = useState<ActivityLog[]>([]);
+  const [isActivityDrawerOpen, setIsActivityDrawerOpen] = useState(false);
+  const [activitySearch, setActivitySearch] = useState('');
+  const [activityShowFilter, setActivityShowFilter] = useState('ALL');
+  const [activityStaffFilter, setActivityStaffFilter] = useState('ALL');
+  const [activityTypeFilter, setActivityTypeFilter] = useState('ALL');
 
   // Toast State
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -671,6 +715,57 @@ export default function App() {
     });
     return () => unsub();
   }, [currentShowId]);
+
+  // Real-time synchronization for Activities (Audit log for Bas)
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'activities'), (snapshot) => {
+      const list: ActivityLog[] = [];
+      snapshot.forEach(d => {
+        list.push(d.data() as ActivityLog);
+      });
+      list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      setActivities(list);
+    }, (error) => {
+      console.warn('Activities listener note:', error);
+    });
+    return () => unsub();
+  }, []);
+
+  // Helper to log system activity
+  const logActivity = async (
+    type: 'BOOKING' | 'CANCELLATION' | 'SHOW_UPDATE' | 'CATEGORY_UPDATE' | 'RECEIPT_UPLOAD',
+    description: string,
+    meta?: {
+      showId?: string;
+      showName?: string;
+      seatIds?: string[];
+      patronName?: string;
+      paymentMethod?: string;
+      details?: string;
+    }
+  ) => {
+    try {
+      const actId = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const showObj = shows.find(s => s.id === (meta?.showId || currentShowId));
+      const activityData: ActivityLog = {
+        id: actId,
+        type,
+        description,
+        showId: meta?.showId || currentShowId,
+        showName: meta?.showName || showObj?.title || 'Current Show',
+        seatIds: meta?.seatIds || [],
+        patronName: meta?.patronName,
+        paymentMethod: meta?.paymentMethod,
+        performedByUsername: currentUser?.username || 'bas',
+        performedByName: currentUser?.name || 'Bas',
+        timestamp: new Date().toISOString(),
+        details: meta?.details,
+      };
+      await setDoc(doc(db, 'activities', actId), activityData);
+    } catch (err) {
+      console.error('Failed to log activity in Firestore:', err);
+    }
+  };
 
   // Sync state to local storage as client-side offline cache
   useEffect(() => {
@@ -1100,6 +1195,20 @@ export default function App() {
     try {
       await batch.commit();
       showToast(`Successfully booked and synced ${selectedSeats.size} seat(s) for ${patronName}!`, 'success');
+      const bookedSeatsArray = Array.from(selectedSeats);
+      const activeShow = shows.find(s => s.id === currentShowId);
+      logActivity(
+        'BOOKING',
+        `Seat ${bookedSeatsArray.join(', ')} booked in "${activeShow?.title || 'Show'}" for ${patronName.trim()} by ${currentUser?.name || 'Bas'} (${paymentMethod})`,
+        {
+          showId: currentShowId,
+          showName: activeShow?.title || 'Current Show',
+          seatIds: bookedSeatsArray,
+          patronName: patronName.trim(),
+          paymentMethod: paymentMethod,
+          details: computedNotes || undefined,
+        }
+      );
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `shows/${currentShowId}/bookings`);
     }
@@ -1117,6 +1226,7 @@ export default function App() {
 
   // Release Seat
   const handleReleaseSeat = async (seatId: string) => {
+    const bookedItem = bookings[seatId];
     setBookings(prev => {
       const next = { ...prev };
       delete next[seatId];
@@ -1127,6 +1237,18 @@ export default function App() {
     try {
       await deleteDoc(doc(db, 'shows', currentShowId, 'bookings', seatId));
       showToast(`Released seat ${seatId} back to inventory and synced.`, 'info');
+      const activeShow = shows.find(s => s.id === currentShowId);
+      logActivity(
+        'CANCELLATION',
+        `Seat ${seatId} booking ${bookedItem ? `for ${bookedItem.patronName}` : ''} in "${activeShow?.title || 'Show'}" was released/cancelled by ${currentUser?.name || 'Bas'}`,
+        {
+          showId: currentShowId,
+          showName: activeShow?.title || 'Current Show',
+          seatIds: [seatId],
+          patronName: bookedItem?.patronName,
+          paymentMethod: bookedItem?.paymentMethod,
+        }
+      );
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `shows/${currentShowId}/bookings/${seatId}`);
     }
@@ -1169,6 +1291,14 @@ export default function App() {
 
     try {
       await setDoc(doc(db, 'shows', targetShow.id), targetShow);
+      logActivity(
+        'SHOW_UPDATE',
+        `Show "${targetShow.title}" (${targetShow.time}) was ${editingShowId ? 'updated' : 'created'} by ${currentUser?.name || 'Bas'}`,
+        {
+          showId: targetShow.id,
+          showName: targetShow.title,
+        }
+      );
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `shows/${targetShow.id}`);
     }
@@ -1378,7 +1508,22 @@ export default function App() {
     }
   };
 
-  // Filtered Manifest Bookings (Bas can filter by Staff)
+  // Column Header Sort Toggle for Gate Manifest
+  const handleManifestSort = (field: 'seatId' | 'patronName' | 'patronId' | 'category' | 'paymentMethod' | 'bookedByName' | 'bookedAt') => {
+    if (manifestSortField === field) {
+      setManifestSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setManifestSortField(field);
+      // For timestamps, default to descending (latest first); for others default to ascending
+      if (field === 'bookedAt' || field === 'category') {
+        setManifestSortDirection('desc');
+      } else {
+        setManifestSortDirection('asc');
+      }
+    }
+  };
+
+  // Filtered & Sorted Manifest Bookings (with sequence sorting by bookedAt, seat, name, etc.)
   const manifestList = useMemo(() => {
     let list = Object.values(bookings);
     if (manifestCategoryFilter !== 'ALL') {
@@ -1397,8 +1542,289 @@ export default function App() {
         (currentUser?.isSuperAdmin && b.bookedByName && b.bookedByName.toLowerCase().includes(q))
       );
     }
-    return list.sort((a, b) => a.seatId.localeCompare(b.seatId, undefined, { numeric: true }));
-  }, [bookings, manifestCategoryFilter, manifestStaffFilter, manifestSearch, currentUser]);
+
+    return list.sort((a, b) => {
+      let comparison = 0;
+      if (manifestSortField === 'seatId') {
+        comparison = a.seatId.localeCompare(b.seatId, undefined, { numeric: true });
+      } else if (manifestSortField === 'patronName') {
+        comparison = (a.patronName || '').localeCompare(b.patronName || '');
+      } else if (manifestSortField === 'patronId') {
+        comparison = (a.patronId || '').localeCompare(b.patronId || '', undefined, { numeric: true });
+      } else if (manifestSortField === 'category') {
+        const catA = categories.find(c => c.id === a.categoryId)?.price || 0;
+        const catB = categories.find(c => c.id === b.categoryId)?.price || 0;
+        comparison = catA - catB;
+      } else if (manifestSortField === 'paymentMethod') {
+        comparison = (a.paymentMethod || '').localeCompare(b.paymentMethod || '');
+      } else if (manifestSortField === 'bookedByName') {
+        comparison = (a.bookedByName || '').localeCompare(b.bookedByName || '');
+      } else if (manifestSortField === 'bookedAt') {
+        const timeA = a.bookedAt ? new Date(a.bookedAt).getTime() : 0;
+        const timeB = b.bookedAt ? new Date(b.bookedAt).getTime() : 0;
+        comparison = timeA - timeB;
+      }
+
+      return manifestSortDirection === 'asc' ? comparison : -comparison;
+    });
+  }, [bookings, manifestCategoryFilter, manifestStaffFilter, manifestSearch, currentUser, manifestSortField, manifestSortDirection, categories]);
+
+  // Combined Activities for Super Admin Bas
+  const allActivities = useMemo(() => {
+    const list: ActivityLog[] = [...activities];
+
+    // Synthesize entries from current show bookings so Bas immediately has full history even before new activities are logged
+    Object.values(bookings).forEach(b => {
+      const exists = list.some(a => 
+        a.type === 'BOOKING' && 
+        a.seatIds?.includes(b.seatId) && 
+        Math.abs(new Date(a.timestamp).getTime() - new Date(b.bookedAt).getTime()) < 5000
+      );
+      if (!exists && b.bookedAt) {
+        list.push({
+          id: `synth_${b.seatId}_${b.bookedAt}`,
+          type: 'BOOKING',
+          description: `Seat ${b.seatId} booked in "${activeShowObj.title}" for ${b.patronName} (${b.paymentMethod}) by ${b.bookedByName || 'Bas'}`,
+          showId: currentShowId,
+          showName: activeShowObj.title,
+          seatIds: [b.seatId],
+          patronName: b.patronName,
+          paymentMethod: b.paymentMethod,
+          performedByUsername: b.bookedByUsername || 'bas',
+          performedByName: b.bookedByName || 'Bas',
+          timestamp: b.bookedAt,
+          details: b.notes || undefined,
+        });
+      }
+    });
+
+    return list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  }, [activities, bookings, currentShowId, activeShowObj]);
+
+  // Filtered Activities for Super Admin Bas
+  const filteredActivities = useMemo(() => {
+    let list = [...allActivities];
+    if (activityShowFilter !== 'ALL') {
+      list = list.filter(a => a.showId === activityShowFilter);
+    }
+    if (activityStaffFilter !== 'ALL') {
+      list = list.filter(a => (a.performedByUsername || 'bas') === activityStaffFilter);
+    }
+    if (activityTypeFilter !== 'ALL') {
+      list = list.filter(a => a.type === activityTypeFilter);
+    }
+    if (activitySearch.trim()) {
+      const q = activitySearch.toLowerCase().trim();
+      list = list.filter(a =>
+        a.description.toLowerCase().includes(q) ||
+        (a.showName && a.showName.toLowerCase().includes(q)) ||
+        (a.performedByName && a.performedByName.toLowerCase().includes(q)) ||
+        (a.patronName && a.patronName.toLowerCase().includes(q)) ||
+        (a.seatIds && a.seatIds.some(s => s.toLowerCase().includes(q))) ||
+        (a.paymentMethod && a.paymentMethod.toLowerCase().includes(q))
+      );
+    }
+    return list;
+  }, [allActivities, activityShowFilter, activityStaffFilter, activityTypeFilter, activitySearch]);
+
+  // Export Activities to CSV
+  const exportActivitiesCSV = () => {
+    if (filteredActivities.length === 0) {
+      showToast('No activities found to export.', 'info');
+      return;
+    }
+    const headers = ['Activity ID', 'Timestamp', 'Type', 'Show Name', 'Seats', 'Patron Name', 'Payment Method', 'Booked / Performed By (Name)', 'Username', 'Description', 'Notes / Details'];
+    const rows = [headers.join(',')];
+    filteredActivities.forEach(act => {
+      rows.push([
+        `"${act.id}"`,
+        `"${act.timestamp}"`,
+        `"${act.type}"`,
+        `"${(act.showName || '').replace(/"/g, '""')}"`,
+        `"${(act.seatIds?.join('; ') || '').replace(/"/g, '""')}"`,
+        `"${(act.patronName || '').replace(/"/g, '""')}"`,
+        `"${(act.paymentMethod || '').replace(/"/g, '""')}"`,
+        `"${(act.performedByName || '').replace(/"/g, '""')}"`,
+        `"${(act.performedByUsername || '').replace(/"/g, '""')}"`,
+        `"${(act.description || '').replace(/"/g, '""')}"`,
+        `"${(act.details || '').replace(/"/g, '""')}"`,
+      ].join(','));
+    });
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `SUCAC_Activity_Audit_Log_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Exported ${filteredActivities.length} activity records to CSV!`, 'success');
+  };
+
+  // Helper to format human-readable relative time
+  const formatRelativeTime = (isoString?: string) => {
+    if (!isoString) return 'Just now';
+    try {
+      const time = new Date(isoString).getTime();
+      const diffSec = Math.floor((Date.now() - time) / 1000);
+      if (diffSec < 45) return 'Just now';
+      if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+      if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+      if (diffSec < 604800) return `${Math.floor(diffSec / 86400)}d ago`;
+      return new Date(isoString).toLocaleDateString([], { month: 'short', day: 'numeric' });
+    } catch (e) {
+      return isoString;
+    }
+  };
+
+  // Handle direct file upload for a booked seat in the Gate Manifest
+  const handleUploadReceiptForManifestSeat = async (seatId: string, file: File) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('Please select a valid image file (PNG, JPG, WebP).', 'error');
+      return;
+    }
+
+    setUploadingReceiptSeatId(seatId);
+    try {
+      const originalKb = (file.size / 1024).toFixed(1);
+      const { dataUrl, compressedSizeKb } = await compressReceiptImage(file);
+      const existingBooking = bookings[seatId];
+      if (!existingBooking) {
+        showToast('Booking not found for this seat.', 'error');
+        return;
+      }
+
+      const updatedBooking: Booking = {
+        ...existingBooking,
+        proofOfPaymentData: dataUrl,
+        proofOfPaymentName: file.name,
+      };
+
+      await setDoc(doc(db, 'shows', currentShowId, 'bookings', seatId), updatedBooking, { merge: true });
+
+      // If viewing in receipt modal, sync it
+      setViewingReceipt(prev => (prev?.seatId === seatId ? updatedBooking : prev));
+
+      showToast(`Proof of payment for Seat ${seatId} compressed to ${compressedSizeKb} KB (<300 KB) and attached!`, 'success');
+
+      logActivity(
+        'RECEIPT_UPLOAD',
+        `Proof of payment uploaded for Seat ${seatId} (${existingBooking.patronName}) by ${currentUser?.name || 'Bas'}`,
+        {
+          showId: currentShowId,
+          showName: activeShowObj.title,
+          seatIds: [seatId],
+          patronName: existingBooking.patronName,
+          paymentMethod: existingBooking.paymentMethod,
+          details: `Receipt: ${file.name} (compressed from ${originalKb} KB to ${compressedSizeKb} KB)`
+        }
+      );
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `shows/${currentShowId}/bookings/${seatId}`);
+      showToast('Failed to upload proof of payment. Please try again.', 'error');
+    } finally {
+      setUploadingReceiptSeatId(null);
+    }
+  };
+
+  // Handle removing a receipt from a booking in the Gate Manifest
+  const handleRemoveReceiptForManifestSeat = async (seatId: string) => {
+    const existingBooking = bookings[seatId];
+    if (!existingBooking) return;
+
+    try {
+      const updatedBooking: Booking = {
+        ...existingBooking,
+      };
+      delete updatedBooking.proofOfPaymentData;
+      delete updatedBooking.proofOfPaymentName;
+
+      await setDoc(doc(db, 'shows', currentShowId, 'bookings', seatId), updatedBooking);
+
+      setViewingReceipt(prev => (prev?.seatId === seatId ? null : prev));
+      showToast(`Proof of payment removed for Seat ${seatId}.`, 'info');
+
+      logActivity(
+        'RECEIPT_UPLOAD',
+        `Proof of payment removed for Seat ${seatId} (${existingBooking.patronName}) by ${currentUser?.name || 'Bas'}`,
+        {
+          showId: currentShowId,
+          showName: activeShowObj.title,
+          seatIds: [seatId],
+          patronName: existingBooking.patronName,
+          details: 'Receipt detached in Gate Manifest'
+        }
+      );
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `shows/${currentShowId}/bookings/${seatId}`);
+    }
+  };
+
+  // Modal drag-and-drop file processing
+  const handleProcessModalReceiptFile = async (file: File) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('Please upload an image file (PNG, JPG, WebP).', 'error');
+      return;
+    }
+    const originalKb = (file.size / 1024).toFixed(1);
+    setIsModalCompressing(true);
+    try {
+      const { dataUrl, compressedSizeKb } = await compressReceiptImage(file);
+      setModalReceiptPreview({
+        dataUrl,
+        fileName: file.name,
+        fileSizeKb: compressedSizeKb,
+        originalKb,
+      });
+      showToast(`Image compressed to ${compressedSizeKb} KB (<300 KB)! Ready to save.`, 'success');
+    } catch (err) {
+      console.error('Error compressing modal receipt', err);
+      showToast('Could not process this file. Please choose an image receipt.', 'error');
+    } finally {
+      setIsModalCompressing(false);
+    }
+  };
+
+  const handleSaveModalReceipt = async () => {
+    if (!uploadModalBooking || !modalReceiptPreview) return;
+    const seatId = uploadModalBooking.seatId;
+    setUploadingReceiptSeatId(seatId);
+    try {
+      const existingBooking = bookings[seatId] || uploadModalBooking;
+      const updatedBooking: Booking = {
+        ...existingBooking,
+        proofOfPaymentData: modalReceiptPreview.dataUrl,
+        proofOfPaymentName: modalReceiptPreview.fileName,
+      };
+      await setDoc(doc(db, 'shows', currentShowId, 'bookings', seatId), updatedBooking, { merge: true });
+
+      setViewingReceipt(prev => (prev?.seatId === seatId ? updatedBooking : prev));
+      showToast(`Proof of payment saved for Seat ${seatId} (${modalReceiptPreview.fileSizeKb} KB)!`, 'success');
+
+      logActivity(
+        'RECEIPT_UPLOAD',
+        `Proof of payment uploaded for Seat ${seatId} (${existingBooking.patronName}) by ${currentUser?.name || 'Bas'}`,
+        {
+          showId: currentShowId,
+          showName: activeShowObj.title,
+          seatIds: [seatId],
+          patronName: existingBooking.patronName,
+          paymentMethod: existingBooking.paymentMethod,
+          details: `Receipt: ${modalReceiptPreview.fileName} (${modalReceiptPreview.fileSizeKb} KB)`
+        }
+      );
+
+      // Close modal
+      setUploadModalBooking(null);
+      setModalReceiptPreview(null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `shows/${currentShowId}/bookings/${seatId}`);
+      showToast('Failed to save proof of payment. Please try again.', 'error');
+    } finally {
+      setUploadingReceiptSeatId(null);
+    }
+  };
 
   // Helper to render an individual seat button
   const renderSeat = (seatId: string, seatNum: number) => {
@@ -1737,14 +2163,70 @@ export default function App() {
               </button>
             )}
 
-            {/* Manifest / Map View Toggle */}
-            <button
-              onClick={() => setView(v => v === 'SEATING' ? 'MANIFEST' : 'SEATING')}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-700 text-xs font-medium transition cursor-pointer"
-            >
-              <ListFilter className="w-3.5 h-3.5 text-amber-400" />
-              <span>{view === 'SEATING' ? 'Gate Manifest' : 'Seat Map'}</span>
-            </button>
+            {/* SUPER ADMIN (BAS) RECENT ACTIVITY DRAWER TRIGGER */}
+            {currentUser?.isSuperAdmin && (
+              <button
+                onClick={() => setIsActivityDrawerOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-bold transition cursor-pointer"
+                title="Open live recent activity stream (Super Admin Bas)"
+              >
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                </span>
+                <Clock className="w-3.5 h-3.5 text-amber-400" />
+                <span>Recent Activity</span>
+              </button>
+            )}
+
+            {/* VIEW NAVIGATION: SEAT MAP | GATE MANIFEST | ACTIVITY LOG (BAS ONLY) */}
+            <div className="flex items-center bg-slate-900 border border-slate-700 p-0.5 rounded-xl">
+              <button
+                onClick={() => setView('SEATING')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition cursor-pointer ${
+                  view === 'SEATING'
+                    ? 'bg-amber-500 text-slate-950 font-bold shadow-md'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800 font-medium'
+                }`}
+              >
+                <Armchair className="w-3.5 h-3.5" />
+                <span>Seat Map</span>
+              </button>
+
+              <button
+                onClick={() => setView('MANIFEST')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition cursor-pointer ${
+                  view === 'MANIFEST'
+                    ? 'bg-amber-500 text-slate-950 font-bold shadow-md'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800 font-medium'
+                }`}
+              >
+                <ListFilter className="w-3.5 h-3.5" />
+                <span>Gate Manifest</span>
+              </button>
+
+              {currentUser?.isSuperAdmin && (
+                <button
+                  onClick={() => setView('ACTIVITIES')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition cursor-pointer ${
+                    view === 'ACTIVITIES'
+                      ? 'bg-amber-500 text-slate-950 font-bold shadow-md'
+                      : 'text-amber-300 hover:text-amber-200 hover:bg-amber-500/10 font-bold'
+                  }`}
+                  title="Super Admin Activity & Audit Stream (Bas only)"
+                >
+                  <Activity className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Activity Log</span>
+                  <span className={`text-[9px] font-black px-1.5 py-0.2 rounded border ${
+                    view === 'ACTIVITIES'
+                      ? 'bg-slate-950 text-amber-300 border-slate-800'
+                      : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                  }`}>
+                    BAS
+                  </span>
+                </button>
+              )}
+            </div>
 
             {/* Export Seat Layout PNG in Header */}
             <button
@@ -2814,7 +3296,7 @@ export default function App() {
 
             </aside>
           </div>
-        ) : (
+        ) : view === 'MANIFEST' ? (
           /* MANIFEST VIEW */
           <div className="flex flex-col gap-4">
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl">
@@ -2868,6 +3350,35 @@ export default function App() {
                     </select>
                   )}
 
+                  {/* QUICK SORT SELECTOR */}
+                  <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs">
+                    <span className="text-slate-400 text-[11px] font-medium flex items-center gap-1">
+                      <ArrowUpDown className="w-3 h-3 text-amber-400" /> Sort:
+                    </span>
+                    <select
+                      value={`${manifestSortField}_${manifestSortDirection}`}
+                      onChange={(e) => {
+                        const [f, d] = e.target.value.split('_');
+                        setManifestSortField(f as any);
+                        setManifestSortDirection(d as any);
+                      }}
+                      className="bg-transparent text-amber-300 font-semibold text-xs focus:outline-none cursor-pointer"
+                    >
+                      <option value="bookedAt_desc" className="bg-slate-900 text-white">Latest Booked First (Default)</option>
+                      <option value="bookedAt_asc" className="bg-slate-900 text-white">Oldest Booked First</option>
+                      <option value="seatId_asc" className="bg-slate-900 text-white">Seat ID (A → Z)</option>
+                      <option value="seatId_desc" className="bg-slate-900 text-white">Seat ID (Z → A)</option>
+                      <option value="patronName_asc" className="bg-slate-900 text-white">Patron Name (A → Z)</option>
+                      <option value="patronName_desc" className="bg-slate-900 text-white">Patron Name (Z → A)</option>
+                      <option value="category_desc" className="bg-slate-900 text-white">Tier Price (High → Low)</option>
+                      <option value="category_asc" className="bg-slate-900 text-white">Tier Price (Low → High)</option>
+                      <option value="paymentMethod_asc" className="bg-slate-900 text-white">Billing Channel (A → Z)</option>
+                      {currentUser?.isSuperAdmin && (
+                        <option value="bookedByName_asc" className="bg-slate-900 text-white">Staff Booker (A → Z)</option>
+                      )}
+                    </select>
+                  </div>
+
                   <button
                     onClick={exportCSV}
                     className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
@@ -2881,19 +3392,142 @@ export default function App() {
               <div className="overflow-x-auto mt-3">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
-                    <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px] tracking-wider bg-slate-950/40">
-                      <th className="py-3 px-3">Seat</th>
-                      <th className="py-3 px-3">Patron Name</th>
-                      <th className="py-3 px-3">ID Number</th>
-                      <th className="py-3 px-3">Category & Price</th>
-                      <th className="py-3 px-3">Billing Channel</th>
+                    <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px] tracking-wider bg-slate-950/40 select-none">
+                      <th
+                        onClick={() => handleManifestSort('seatId')}
+                        className={`py-3 px-3 cursor-pointer hover:text-amber-300 transition group ${
+                          manifestSortField === 'seatId' ? 'text-amber-400 font-bold bg-amber-500/5' : ''
+                        }`}
+                        title="Click to sort by seat number"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>Seat</span>
+                          {manifestSortField === 'seatId' ? (
+                            manifestSortDirection === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-400" /> : <ArrowDown className="w-3 h-3 text-amber-400" />
+                          ) : (
+                            <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100 transition" />
+                          )}
+                        </div>
+                      </th>
+
+                      <th
+                        onClick={() => handleManifestSort('patronName')}
+                        className={`py-3 px-3 cursor-pointer hover:text-amber-300 transition group ${
+                          manifestSortField === 'patronName' ? 'text-amber-400 font-bold bg-amber-500/5' : ''
+                        }`}
+                        title="Click to sort by patron name"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>Patron Name</span>
+                          {manifestSortField === 'patronName' ? (
+                            manifestSortDirection === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-400" /> : <ArrowDown className="w-3 h-3 text-amber-400" />
+                          ) : (
+                            <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100 transition" />
+                          )}
+                        </div>
+                      </th>
+
+                      <th
+                        onClick={() => handleManifestSort('patronId')}
+                        className={`py-3 px-3 cursor-pointer hover:text-amber-300 transition group ${
+                          manifestSortField === 'patronId' ? 'text-amber-400 font-bold bg-amber-500/5' : ''
+                        }`}
+                        title="Click to sort by ID number"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>ID Number</span>
+                          {manifestSortField === 'patronId' ? (
+                            manifestSortDirection === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-400" /> : <ArrowDown className="w-3 h-3 text-amber-400" />
+                          ) : (
+                            <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100 transition" />
+                          )}
+                        </div>
+                      </th>
+
+                      <th
+                        onClick={() => handleManifestSort('category')}
+                        className={`py-3 px-3 cursor-pointer hover:text-amber-300 transition group ${
+                          manifestSortField === 'category' ? 'text-amber-400 font-bold bg-amber-500/5' : ''
+                        }`}
+                        title="Click to sort by ticket tier price"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>Category & Price</span>
+                          {manifestSortField === 'category' ? (
+                            manifestSortDirection === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-400" /> : <ArrowDown className="w-3 h-3 text-amber-400" />
+                          ) : (
+                            <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100 transition" />
+                          )}
+                        </div>
+                      </th>
+
+                      <th
+                        onClick={() => handleManifestSort('paymentMethod')}
+                        className={`py-3 px-3 cursor-pointer hover:text-amber-300 transition group ${
+                          manifestSortField === 'paymentMethod' ? 'text-amber-400 font-bold bg-amber-500/5' : ''
+                        }`}
+                        title="Click to sort by billing channel"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>Billing Channel</span>
+                          {manifestSortField === 'paymentMethod' ? (
+                            manifestSortDirection === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-400" /> : <ArrowDown className="w-3 h-3 text-amber-400" />
+                          ) : (
+                            <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100 transition" />
+                          )}
+                        </div>
+                      </th>
+
                       <th className="py-3 px-3 text-cyan-400">Proof / Receipt</th>
+
                       {/* SUPER ADMIN (BAS) ONLY COLUMN: Who booked it! */}
                       {currentUser?.isSuperAdmin && (
-                        <th className="py-3 px-3 text-amber-400">Booked By (Staff)</th>
+                        <th
+                          onClick={() => handleManifestSort('bookedByName')}
+                          className={`py-3 px-3 cursor-pointer hover:text-amber-300 transition group ${
+                            manifestSortField === 'bookedByName' ? 'text-amber-400 font-bold bg-amber-500/5' : ''
+                          }`}
+                          title="Click to sort by staff member"
+                        >
+                          <div className="flex items-center gap-1">
+                            <span className="text-amber-400">Booked By (Staff)</span>
+                            {manifestSortField === 'bookedByName' ? (
+                              manifestSortDirection === 'asc' ? <ArrowUp className="w-3 h-3 text-amber-400" /> : <ArrowDown className="w-3 h-3 text-amber-400" />
+                            ) : (
+                              <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100 transition" />
+                            )}
+                          </div>
+                        </th>
                       )}
+
                       <th className="py-3 px-3">Notes</th>
-                      <th className="py-3 px-3">Timestamp</th>
+
+                      {/* SEQUENCE / TIMESTAMP COLUMN */}
+                      <th
+                        onClick={() => handleManifestSort('bookedAt')}
+                        className={`py-3 px-3 cursor-pointer hover:text-amber-300 transition group ${
+                          manifestSortField === 'bookedAt' ? 'text-amber-400 font-bold bg-amber-500/10' : ''
+                        }`}
+                        title="Click to sort by time booked (sequence)"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span>Timestamp (Sequence)</span>
+                          {manifestSortField === 'bookedAt' ? (
+                            manifestSortDirection === 'desc' ? (
+                              <span className="inline-flex items-center gap-0.5 text-amber-400 text-[9px] bg-amber-500/20 px-1 py-0.2 rounded border border-amber-500/30">
+                                <ArrowDown className="w-2.5 h-2.5" /> Latest
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-0.5 text-amber-400 text-[9px] bg-amber-500/20 px-1 py-0.2 rounded border border-amber-500/30">
+                                <ArrowUp className="w-2.5 h-2.5" /> Oldest
+                              </span>
+                            )
+                          ) : (
+                            <ArrowUpDown className="w-3 h-3 opacity-30 group-hover:opacity-100 transition" />
+                          )}
+                        </div>
+                      </th>
+
                       <th className="py-3 px-3 text-right">Actions</th>
                     </tr>
                   </thead>
@@ -2904,6 +3538,7 @@ export default function App() {
                         <tr key={item.seatId} className="hover:bg-slate-800/50 transition">
                           <td className="py-2.5 px-3 font-bold text-amber-400 font-mono-num">{item.seatId}</td>
                           <td className="py-2.5 px-3 font-semibold text-white">{item.patronName}</td>
+
                           <td className="py-2.5 px-3 text-slate-300 font-mono-num text-[11px]">{item.patronId}</td>
                           <td className="py-2.5 px-3">
                             <span
@@ -2924,33 +3559,76 @@ export default function App() {
                             </span>
                           </td>
 
-                          {/* Proof / Receipt Column */}
+                          {/* Proof / Receipt Column with interactive Upload on "No upload" and Thumbnail view */}
                           <td className="py-2.5 px-3">
-                            {item.proofOfPaymentData ? (
-                              <button
-                                type="button"
-                                onClick={() => setViewingReceipt(item)}
-                                className="group flex items-center gap-2 p-1 rounded-lg border border-slate-700 hover:border-cyan-400 bg-slate-900/90 hover:bg-slate-800 transition cursor-pointer text-left"
-                                title="Click to view full receipt image"
-                              >
-                                <img
-                                  src={item.proofOfPaymentData}
-                                  alt="Receipt thumbnail"
-                                  className="w-8 h-8 rounded object-cover border border-slate-800 group-hover:scale-105 transition flex-shrink-0 bg-slate-950"
-                                />
-                                <div className="flex flex-col overflow-hidden max-w-[90px]">
-                                  <span className="text-[10px] font-bold text-cyan-400 group-hover:underline flex items-center gap-0.5">
-                                    <Eye className="w-2.5 h-2.5" /> View
-                                  </span>
-                                  <span className="text-[9px] text-slate-400 truncate font-mono">
-                                    {item.proofOfPaymentName || 'Receipt'}
-                                  </span>
-                                </div>
-                              </button>
-                            ) : item.paymentMethod === 'Online Payment' ? (
-                              <span className="text-[10px] text-slate-500 italic">No upload</span>
+                            {uploadingReceiptSeatId === item.seatId ? (
+                              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-950/60 border border-cyan-500/40 text-[11px] font-semibold text-cyan-300">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                                <span>Compressing...</span>
+                              </div>
+                            ) : item.proofOfPaymentData ? (
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setViewingReceipt(item)}
+                                  className="group/btn flex items-center gap-2 p-1 rounded-lg border border-slate-700 hover:border-cyan-400 bg-slate-900/90 hover:bg-slate-800 transition cursor-pointer text-left"
+                                  title="Click to view full receipt image"
+                                >
+                                  <img
+                                    src={item.proofOfPaymentData}
+                                    alt="Receipt thumbnail"
+                                    className="w-8 h-8 rounded object-cover border border-slate-800 group-hover/btn:scale-105 transition flex-shrink-0 bg-slate-950"
+                                  />
+                                  <div className="flex flex-col overflow-hidden max-w-[90px]">
+                                    <span className="text-[10px] font-bold text-cyan-400 group-hover/btn:underline flex items-center gap-0.5">
+                                      <Eye className="w-2.5 h-2.5" /> View
+                                    </span>
+                                    <span className="text-[9px] text-slate-400 truncate font-mono">
+                                      {item.proofOfPaymentName || 'Receipt'}
+                                    </span>
+                                  </div>
+                                </button>
+                                {/* Replace receipt button */}
+                                <label
+                                  className="p-1.5 rounded-lg text-slate-500 hover:text-cyan-300 hover:bg-cyan-950/60 border border-transparent hover:border-cyan-500/30 transition cursor-pointer"
+                                  title="Replace / Update proof of payment"
+                                >
+                                  <UploadCloud className="w-3.5 h-3.5 text-cyan-400/80 hover:text-cyan-300" />
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="hidden"
+                                    disabled={uploadingReceiptSeatId === item.seatId}
+                                    onChange={(e) => {
+                                      const file = e.target.files?.[0];
+                                      if (file) handleUploadReceiptForManifestSeat(item.seatId, file);
+                                      e.target.value = '';
+                                    }}
+                                  />
+                                </label>
+                              </div>
                             ) : (
-                              <span className="text-[10px] text-slate-600">—</span>
+                              <label
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-dashed border-cyan-500/40 bg-cyan-950/20 hover:bg-cyan-900/40 hover:border-cyan-400 text-cyan-300 hover:text-cyan-100 text-[11px] font-medium transition cursor-pointer group/btn shadow-sm"
+                                title={`Click to upload proof of payment for seat ${item.seatId} (${item.patronName})`}
+                              >
+                                <UploadCloud className="w-3.5 h-3.5 text-cyan-400 group-hover/btn:scale-110 transition flex-shrink-0" />
+                                <span className="text-slate-400 group-hover/btn:text-slate-200">No upload</span>
+                                <span className="text-[10px] font-bold text-cyan-400 group-hover/btn:underline flex items-center gap-0.5">
+                                  + Upload
+                                </span>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  className="hidden"
+                                  disabled={uploadingReceiptSeatId === item.seatId}
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) handleUploadReceiptForManifestSeat(item.seatId, file);
+                                    e.target.value = '';
+                                  }}
+                                />
+                              </label>
                             )}
                           </td>
 
@@ -2965,16 +3643,50 @@ export default function App() {
                           )}
 
                           <td className="py-2.5 px-3 text-slate-400 text-[11px] max-w-xs truncate">{item.notes || '-'}</td>
-                          <td className="py-2.5 px-3 text-slate-400 text-[11px]">
-                            {new Date(item.bookedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          <td className="py-2.5 px-3 text-slate-300 text-[11px] font-mono whitespace-nowrap">
+                            <div className="flex flex-col">
+                              <span className="font-semibold text-white">
+                                {new Date(item.bookedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                              </span>
+                              <span className="text-[10px] text-slate-400">
+                                {new Date(item.bookedAt).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
+                              </span>
+                            </div>
                           </td>
                           <td className="py-2.5 px-3 text-right">
-                            <button
-                              onClick={() => setInspectSeatId(item.seatId)}
-                              className="text-rose-400 hover:text-rose-300 font-semibold text-[11px] px-2.5 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 transition cursor-pointer"
-                            >
-                              Release
-                            </button>
+                            <div className="flex items-center justify-end gap-1.5">
+                              {!item.proofOfPaymentData ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setUploadModalBooking(item);
+                                    setModalReceiptPreview(null);
+                                  }}
+                                  className="text-cyan-400 hover:text-cyan-200 font-semibold text-[11px] px-2 py-1 rounded bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-500/30 transition cursor-pointer flex items-center gap-1"
+                                  title={`Upload proof of payment for ${item.seatId}`}
+                                >
+                                  <UploadCloud className="w-3 h-3" />
+                                  <span>Upload Proof</span>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setViewingReceipt(item)}
+                                  className="text-cyan-400 hover:text-cyan-200 font-semibold text-[11px] px-2 py-1 rounded bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-500/30 transition cursor-pointer flex items-center gap-1"
+                                  title="View proof receipt"
+                                >
+                                  <Eye className="w-3 h-3" />
+                                  <span>Receipt</span>
+                                </button>
+                              )}
+
+                              <button
+                                onClick={() => setInspectSeatId(item.seatId)}
+                                className="text-rose-400 hover:text-rose-300 font-semibold text-[11px] px-2.5 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 transition cursor-pointer"
+                              >
+                                Release
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -2988,6 +3700,345 @@ export default function App() {
                 )}
               </div>
             </div>
+          </div>
+        ) : currentUser?.isSuperAdmin ? (
+          /* ACTIVITIES AUDIT VIEW (SUPER ADMIN BAS ONLY) */
+          <div className="flex flex-col gap-5">
+            {/* Top Overview & Controls Card */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-2xl">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center flex-shrink-0 shadow-lg shadow-amber-500/10">
+                    <Activity className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-base font-bold text-white">System Activities & Audit Stream</h2>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-black bg-amber-500 text-slate-950 uppercase tracking-wider">
+                        Super Admin Bas
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Live real-time feed of ticket bookings, cancellations, and system events with staff attribution.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[11px] font-medium">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>Live Firestore Sync</span>
+                  </span>
+
+                  <button
+                    onClick={exportActivitiesCSV}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" /> Export Audit CSV
+                  </button>
+                </div>
+              </div>
+
+              {/* 4 Summary Metric Cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+                <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block">Total In Feed</span>
+                  <div className="flex items-baseline gap-2 mt-1">
+                    <span className="text-xl font-black text-amber-400 font-mono-num">{allActivities.length}</span>
+                    <span className="text-[10px] text-slate-500">recorded events</span>
+                  </div>
+                </div>
+
+                <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block">Seat Bookings</span>
+                  <div className="flex items-baseline gap-2 mt-1">
+                    <span className="text-xl font-black text-emerald-400 font-mono-num">
+                      {allActivities.filter(a => a.type === 'BOOKING').length}
+                    </span>
+                    <span className="text-[10px] text-slate-500">tickets reserved</span>
+                  </div>
+                </div>
+
+                <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block">Cancellations</span>
+                  <div className="flex items-baseline gap-2 mt-1">
+                    <span className="text-xl font-black text-rose-400 font-mono-num">
+                      {allActivities.filter(a => a.type === 'CANCELLATION').length}
+                    </span>
+                    <span className="text-[10px] text-slate-500">seats released</span>
+                  </div>
+                </div>
+
+                <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold block">Active Production</span>
+                  <div className="flex items-baseline gap-2 mt-1">
+                    <span className="text-sm font-bold text-white truncate max-w-[140px]" title={activeShowObj.title}>
+                      {activeShowObj.title}
+                    </span>
+                    <span className="text-[10px] text-amber-400 font-mono-num">{Object.keys(bookings).length} booked</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Filters Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-3 mt-4 pt-4 border-t border-slate-800/80">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      type="text"
+                      value={activitySearch}
+                      onChange={e => setActivitySearch(e.target.value)}
+                      placeholder="Search seat, patron, staff, show..."
+                      className="bg-slate-950 border border-slate-700 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 w-64"
+                    />
+                  </div>
+
+                  {/* Filter by Show */}
+                  <select
+                    value={activityShowFilter}
+                    onChange={e => setActivityShowFilter(e.target.value)}
+                    className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  >
+                    <option value="ALL">All Shows ({shows.length})</option>
+                    {shows.map(s => (
+                      <option key={s.id} value={s.id}>{s.title} ({s.time})</option>
+                    ))}
+                  </select>
+
+                  {/* Filter by Staff Booker */}
+                  <select
+                    value={activityStaffFilter}
+                    onChange={e => setActivityStaffFilter(e.target.value)}
+                    className="bg-slate-950 border border-amber-500/40 rounded-xl px-3 py-1.5 text-xs text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  >
+                    <option value="ALL">All Staff Members</option>
+                    {users.map(u => (
+                      <option key={u.username} value={u.username}>Staff: {u.name} (@{u.username})</option>
+                    ))}
+                  </select>
+
+                  {/* Filter by Type */}
+                  <select
+                    value={activityTypeFilter}
+                    onChange={e => setActivityTypeFilter(e.target.value)}
+                    className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  >
+                    <option value="ALL">All Action Types</option>
+                    <option value="BOOKING">Bookings Only</option>
+                    <option value="CANCELLATION">Cancellations / Releases</option>
+                    <option value="SHOW_UPDATE">Show Updates</option>
+                  </select>
+
+                  {(activitySearch || activityShowFilter !== 'ALL' || activityStaffFilter !== 'ALL' || activityTypeFilter !== 'ALL') && (
+                    <button
+                      onClick={() => {
+                        setActivitySearch('');
+                        setActivityShowFilter('ALL');
+                        setActivityStaffFilter('ALL');
+                        setActivityTypeFilter('ALL');
+                      }}
+                      className="text-xs text-rose-400 hover:text-rose-300 underline font-medium cursor-pointer"
+                    >
+                      Reset Filters
+                    </button>
+                  )}
+                </div>
+
+                <div className="text-xs text-slate-400 font-medium">
+                  Showing <span className="font-bold text-amber-300">{filteredActivities.length}</span> of {allActivities.length} activities
+                </div>
+              </div>
+            </div>
+
+            {/* Activities Timeline List */}
+            <div className="space-y-3">
+              {filteredActivities.length === 0 ? (
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center">
+                  <Activity className="w-10 h-10 text-slate-600 mx-auto mb-3" />
+                  <h3 className="text-sm font-bold text-slate-300">No activities match your current filters</h3>
+                  <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                    Try clearing the search query or changing the show or staff member filter.
+                  </p>
+                </div>
+              ) : (
+                filteredActivities.map(act => {
+                  const isBooking = act.type === 'BOOKING';
+                  const isCancellation = act.type === 'CANCELLATION';
+                  const isReceiptUpload = act.type === 'RECEIPT_UPLOAD';
+
+                  return (
+                    <div
+                      key={act.id}
+                      className={`bg-slate-900/90 hover:bg-slate-900 border rounded-2xl p-4 transition shadow-lg relative overflow-hidden group ${
+                        isBooking
+                          ? 'border-emerald-500/30 hover:border-emerald-500/60'
+                          : isCancellation
+                          ? 'border-rose-500/30 hover:border-rose-500/60'
+                          : isReceiptUpload
+                          ? 'border-cyan-500/30 hover:border-cyan-500/60'
+                          : 'border-amber-500/30 hover:border-amber-500/60'
+                      }`}
+                    >
+                      {/* Left ambient color stripe */}
+                      <div
+                        className={`absolute left-0 top-0 bottom-0 w-1.5 ${
+                          isBooking ? 'bg-emerald-500' : isCancellation ? 'bg-rose-500' : isReceiptUpload ? 'bg-cyan-400' : 'bg-amber-500'
+                        }`}
+                      />
+
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pl-2">
+                        {/* Event Content */}
+                        <div className="flex items-start gap-3">
+                          <div
+                            className={`p-2 rounded-xl flex-shrink-0 mt-0.5 ${
+                              isBooking
+                                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                : isCancellation
+                                ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                                : isReceiptUpload
+                                ? 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/30'
+                                : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                            }`}
+                          >
+                            {isBooking ? (
+                              <CheckSquare className="w-4 h-4" />
+                            ) : isCancellation ? (
+                              <Trash2 className="w-4 h-4" />
+                            ) : isReceiptUpload ? (
+                              <UploadCloud className="w-4 h-4" />
+                            ) : (
+                              <Settings2 className="w-4 h-4" />
+                            )}
+                          </div>
+
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider ${
+                                  isBooking
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    : isCancellation
+                                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                    : isReceiptUpload
+                                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                }`}
+                              >
+                                {isBooking ? 'Seat Booked' : isCancellation ? 'Seat Released' : isReceiptUpload ? 'Proof Attached' : 'Show Schedule'}
+                              </span>
+
+                              {act.seatIds && act.seatIds.length > 0 && (
+                                <span className="font-mono-num font-bold text-amber-400 text-xs px-2 py-0.5 bg-amber-500/10 rounded border border-amber-500/20">
+                                  {act.seatIds.join(', ')}
+                                </span>
+                              )}
+
+                              <span className="text-xs text-slate-400">•</span>
+                              <span className="text-xs text-slate-300 font-medium">{act.showName}</span>
+                            </div>
+
+                            <p className="text-sm font-semibold text-white mt-1.5">
+                              {act.description}
+                            </p>
+
+                            <div className="flex flex-wrap items-center gap-2 mt-2 text-xs">
+                              {/* Staff badge */}
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30 text-[11px] font-bold">
+                                <UserCheck className="w-3 h-3 text-amber-400" />
+                                <span>Booked by {act.performedByName || 'Bas'}</span>
+                                <span className="opacity-70 font-mono text-[10px]">(@{act.performedByUsername || 'bas'})</span>
+                              </span>
+
+                              {/* Patron name badge */}
+                              {act.patronName && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-slate-200 border border-slate-700 text-[11px]">
+                                  <span>Patron:</span>
+                                  <strong className="text-white">{act.patronName}</strong>
+                                </span>
+                              )}
+
+                              {/* Payment badge */}
+                              {act.paymentMethod && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/40 text-emerald-300 border border-emerald-500/30 text-[11px] font-medium">
+                                  <span>{act.paymentMethod}</span>
+                                </span>
+                              )}
+
+                              {/* Notes */}
+                              {act.details && (
+                                <span className="text-[11px] text-slate-400 italic bg-slate-950/60 px-2 py-0.5 rounded border border-slate-800 truncate max-w-xs">
+                                  {act.details}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Right: Timestamp & Show jump action */}
+                        <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2 sm:gap-1.5 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-800">
+                          <div className="text-right">
+                            <span className="text-xs font-bold text-amber-300">
+                              {formatRelativeTime(act.timestamp)}
+                            </span>
+                            <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                              {new Date(act.timestamp).toLocaleString([], {
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit'
+                              })}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => {
+                                setCurrentShowId(act.showId);
+                                setView('SEATING');
+                                showToast(`Jumped to show: ${act.showName}`, 'info');
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 hover:border-amber-500/50 text-[11px] font-medium transition cursor-pointer flex items-center gap-1"
+                              title="Switch to this show's seat map"
+                            >
+                              <span>Seat Map</span>
+                              <ArrowRight className="w-3 h-3 text-amber-400" />
+                            </button>
+
+                            <button
+                              onClick={() => {
+                                setCurrentShowId(act.showId);
+                                setView('MANIFEST');
+                                showToast(`Opened manifest for: ${act.showName}`, 'info');
+                              }}
+                              className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] font-medium transition cursor-pointer"
+                              title="Open manifest for this show"
+                            >
+                              Manifest
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-10 text-center">
+            <ShieldCheck className="w-10 h-10 text-amber-400 mx-auto mb-3" />
+            <h3 className="text-base font-bold text-white">Super Admin Access Only</h3>
+            <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+              This system activity and audit log is exclusively available to Super Admin Bas.
+            </p>
+            <button
+              onClick={() => setView('SEATING')}
+              className="mt-4 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs transition cursor-pointer"
+            >
+              Return to Seat Map
+            </button>
           </div>
         )}
 
@@ -3833,6 +4884,40 @@ export default function App() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {/* Replace receipt action */}
+                <label
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition cursor-pointer flex items-center gap-1 text-xs"
+                  title="Replace with new receipt file"
+                >
+                  <UploadCloud className="w-4 h-4 text-cyan-400" />
+                  <span className="text-[11px] font-medium text-cyan-400 hidden sm:inline">Replace</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file && viewingReceipt) handleUploadReceiptForManifestSeat(viewingReceipt.seatId, file);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+
+                {/* Remove receipt action */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (viewingReceipt) {
+                      handleRemoveReceiptForManifestSeat(viewingReceipt.seatId);
+                    }
+                  }}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-rose-300 hover:bg-slate-800 transition cursor-pointer flex items-center gap-1 text-xs"
+                  title="Remove receipt image"
+                >
+                  <Trash2 className="w-4 h-4 text-rose-400" />
+                  <span className="text-[11px] font-medium text-rose-400 hidden sm:inline">Remove</span>
+                </button>
+
                 {viewingReceipt.proofOfPaymentData && (
                   <a
                     href={viewingReceipt.proofOfPaymentData}
@@ -3885,6 +4970,333 @@ export default function App() {
                   className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium transition cursor-pointer"
                 >
                   Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MANIFEST PROOF OF PAYMENT UPLOAD MODAL */}
+      {uploadModalBooking && (
+        <div
+          className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => {
+            setUploadModalBooking(null);
+            setModalReceiptPreview(null);
+          }}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700 w-full max-w-lg rounded-2xl p-5 shadow-2xl flex flex-col text-left relative"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 flex items-center justify-center">
+                  <UploadCloud className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-white flex items-center gap-2">
+                    <span>Upload Proof of Payment</span>
+                    <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                      Seat {uploadModalBooking.seatId}
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Patron: <strong className="text-white">{uploadModalBooking.patronName}</strong>
+                    {uploadModalBooking.patronId && <span className="ml-1 text-slate-500 font-mono">({uploadModalBooking.patronId})</span>}
+                    <span className="mx-1.5">•</span>
+                    <span>{activeShowObj.title}</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setUploadModalBooking(null);
+                  setModalReceiptPreview(null);
+                }}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                title="Cancel"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Drag & Drop Upload Zone */}
+            <div className="my-4">
+              <input
+                id="manifest-modal-receipt-input"
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={isModalCompressing}
+                onChange={e => {
+                  const file = e.target.files?.[0];
+                  if (file) handleProcessModalReceiptFile(file);
+                  e.target.value = '';
+                }}
+              />
+
+              {isModalCompressing ? (
+                <div className="p-8 rounded-2xl border border-cyan-500/40 bg-cyan-950/40 flex flex-col items-center justify-center gap-3 text-cyan-300">
+                  <Loader2 className="w-8 h-8 animate-spin text-cyan-400" />
+                  <div className="text-center">
+                    <span className="text-xs font-bold block">Optimizing &amp; Compressing...</span>
+                    <span className="text-[11px] text-cyan-400/80">Scaling image to &lt;300 KB for lightning fast storage</span>
+                  </div>
+                </div>
+              ) : modalReceiptPreview ? (
+                <div className="p-4 rounded-2xl border border-cyan-500/50 bg-cyan-950/30 flex flex-col gap-3">
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={modalReceiptPreview.dataUrl}
+                      alt="Receipt preview"
+                      className="w-16 h-16 rounded-xl object-cover border border-cyan-500/40 bg-slate-950 flex-shrink-0 shadow-md"
+                    />
+                    <div className="flex-1 overflow-hidden">
+                      <div className="text-xs font-bold text-white truncate">{modalReceiptPreview.fileName}</div>
+                      <div className="flex items-center gap-2 mt-1 text-[11px]">
+                        <span className="text-slate-400">Original: {modalReceiptPreview.originalKb} KB</span>
+                        <span className="text-slate-500">→</span>
+                        <span className="text-cyan-300 font-bold bg-cyan-500/20 px-1.5 py-0.2 rounded border border-cyan-500/30">
+                          {modalReceiptPreview.fileSizeKb} KB (&lt;300 KB)
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-emerald-400 mt-1 flex items-center gap-1">
+                        <CheckSquare className="w-3 h-3" /> Ready to link to Seat {uploadModalBooking.seatId}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-2 border-t border-cyan-500/20">
+                    <label
+                      htmlFor="manifest-modal-receipt-input"
+                      className="px-2.5 py-1 text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition cursor-pointer font-medium"
+                    >
+                      Choose Different Image
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setModalReceiptPreview(null)}
+                      className="px-2.5 py-1 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition cursor-pointer font-medium"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  onDragOver={e => {
+                    e.preventDefault();
+                    setIsModalDragging(true);
+                  }}
+                  onDragLeave={() => setIsModalDragging(false)}
+                  onDrop={e => {
+                    e.preventDefault();
+                    setIsModalDragging(false);
+                    const file = e.dataTransfer.files?.[0];
+                    if (file) handleProcessModalReceiptFile(file);
+                  }}
+                  onClick={() => document.getElementById('manifest-modal-receipt-input')?.click()}
+                  className={`p-8 rounded-2xl border-2 border-dashed transition flex flex-col items-center justify-center gap-2 cursor-pointer text-center ${
+                    isModalDragging
+                      ? 'border-cyan-400 bg-cyan-950/40 text-cyan-300 scale-[1.01]'
+                      : 'border-slate-700 hover:border-cyan-500/60 bg-slate-950/60 hover:bg-slate-900 text-slate-400'
+                  }`}
+                >
+                  <UploadCloud className="w-8 h-8 text-cyan-400" />
+                  <div className="text-xs font-semibold text-slate-200">
+                    Drag &amp; drop receipt here, or <span className="text-cyan-400 underline">browse device</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Automatically compressed to &lt;300 KB • Supports PNG, JPG, WebP
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer Actions */}
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-between">
+              <span className="text-[11px] text-slate-400">
+                Payment Channel: <strong className="text-slate-200">{uploadModalBooking.paymentMethod}</strong>
+              </span>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUploadModalBooking(null);
+                    setModalReceiptPreview(null);
+                  }}
+                  className="px-3 py-1.5 text-xs text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition cursor-pointer font-medium"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!modalReceiptPreview || isModalCompressing || uploadingReceiptSeatId === uploadModalBooking.seatId}
+                  onClick={handleSaveModalReceipt}
+                  className="px-4 py-1.5 text-xs font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-md shadow-cyan-500/20"
+                >
+                  {uploadingReceiptSeatId === uploadModalBooking.seatId ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckSquare className="w-3.5 h-3.5" />
+                      <span>Save Proof of Payment</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUPER ADMIN (BAS) LIVE RECENT ACTIVITY SLIDE-OVER DRAWER */}
+      {isActivityDrawerOpen && currentUser?.isSuperAdmin && (
+        <div className="fixed inset-0 z-[105] overflow-hidden">
+          {/* Backdrop */}
+          <div
+            onClick={() => setIsActivityDrawerOpen(false)}
+            className="absolute inset-0 bg-black/60 backdrop-blur-xs transition-opacity cursor-pointer"
+          />
+
+          {/* Slide-over panel */}
+          <div className="absolute inset-y-0 right-0 max-w-full flex pl-10">
+            <div className="w-screen max-w-md bg-slate-900 border-l border-slate-800 shadow-2xl flex flex-col">
+              {/* Drawer Header */}
+              <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-8 w-8 rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center">
+                    <Activity className="w-4 h-4 animate-pulse" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <h3 className="font-bold text-white text-sm">Recent Activities</h3>
+                      <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-amber-500 text-slate-950">
+                        BAS
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">Live feed of ticket reservations & staff actions</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setIsActivityDrawerOpen(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                  title="Close activity drawer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Quick Search */}
+              <div className="p-3 border-b border-slate-800 bg-slate-900/90">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={activitySearch}
+                    onChange={e => setActivitySearch(e.target.value)}
+                    placeholder="Search recent activity..."
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+              </div>
+
+              {/* Drawer Feed */}
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 divide-y divide-slate-800/50">
+                {filteredActivities.length === 0 ? (
+                  <div className="text-center py-12 text-slate-500 text-xs">
+                    No recent activities recorded.
+                  </div>
+                ) : (
+                  filteredActivities.slice(0, 40).map(act => (
+                    <div key={act.id} className="pt-3 first:pt-0">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                              act.type === 'BOOKING'
+                                ? 'bg-emerald-400'
+                                : act.type === 'CANCELLATION'
+                                ? 'bg-rose-400'
+                                : 'bg-amber-400'
+                            }`}
+                          />
+                          <span className="text-xs font-bold text-white">
+                            {act.seatIds && act.seatIds.length > 0 ? `Seat ${act.seatIds.join(', ')}` : act.type}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-amber-300 font-semibold font-mono">
+                          {formatRelativeTime(act.timestamp)}
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-slate-200 mt-1 font-medium">
+                        {act.description}
+                      </p>
+
+                      <div className="flex flex-wrap items-center gap-1.5 mt-2 text-[10px]">
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30 font-bold">
+                          <UserCheck className="w-2.5 h-2.5" />
+                          <span>{act.performedByName}</span>
+                          <span className="opacity-70 font-mono">(@{act.performedByUsername})</span>
+                        </span>
+
+                        <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
+                          {act.showName}
+                        </span>
+
+                        {act.paymentMethod && (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">
+                            {act.paymentMethod}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-2 flex items-center justify-between text-[10px] text-slate-400 pt-1 border-t border-slate-800/40">
+                        <span>{new Date(act.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                        <button
+                          onClick={() => {
+                            setCurrentShowId(act.showId);
+                            setView('SEATING');
+                            setIsActivityDrawerOpen(false);
+                            showToast(`Switched to show: ${act.showName}`, 'info');
+                          }}
+                          className="text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 cursor-pointer"
+                        >
+                          <span>View on Seat Map</span>
+                          <ArrowRight className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Drawer Footer */}
+              <div className="p-3 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between">
+                <span className="text-[11px] text-slate-400">
+                  {filteredActivities.length} total events
+                </span>
+
+                <button
+                  onClick={() => {
+                    setView('ACTIVITIES');
+                    setIsActivityDrawerOpen(false);
+                  }}
+                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1 shadow-md shadow-amber-500/20"
+                >
+                  <span>Open Full Activity Log</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>

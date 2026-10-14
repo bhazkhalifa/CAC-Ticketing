@@ -85,6 +85,22 @@ service cloud.firestore {
       }
     }
 
+    function isValidActivity(data) {
+      return data.keys().hasAll(['id', 'type', 'description', 'showId', 'showName', 'performedByUsername', 'performedByName', 'timestamp']) &&
+             data.keys().hasOnly(['id', 'type', 'description', 'showId', 'showName', 'performedByUsername', 'performedByName', 'timestamp', 'seatIds', 'patronName', 'paymentMethod', 'details']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.type is string && data.type.size() <= 50 &&
+             data.description is string && data.description.size() <= 500 &&
+             data.showId is string && data.showId.size() <= 100 &&
+             data.showName is string && data.showName.size() <= 200 &&
+             data.performedByUsername is string && data.performedByUsername.size() <= 100 &&
+             data.performedByName is string && data.performedByName.size() <= 150 &&
+             data.timestamp is string && data.timestamp.size() <= 60 &&
+             (!('patronName' in data) || (data.patronName is string && data.patronName.size() <= 200)) &&
+             (!('paymentMethod' in data) || (data.paymentMethod is string && data.paymentMethod.size() <= 100)) &&
+             (!('details' in data) || (data.details is string && data.details.size() <= 500));
+    }
+
     // Seat Categories collection
     match /categories/{categoryId} {
       allow read: if true;
@@ -97,6 +113,13 @@ service cloud.firestore {
       allow read: if true;
       allow create, update: if isValidId(username) && isValidUser(request.resource.data);
       allow delete: if isValidId(username);
+    }
+
+    // System Activities & Audit Trail for Super Admin Bas
+    match /activities/{activityId} {
+      allow read: if true;
+      allow create, update: if isValidId(activityId) && isValidActivity(request.resource.data);
+      allow delete: if isValidId(activityId);
     }
 
     // Connection test doc
